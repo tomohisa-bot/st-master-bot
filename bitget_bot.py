@@ -5,6 +5,7 @@ import time
 import requests
 import json
 import os
+import base64
 
 app = Flask(__name__)
 
@@ -19,7 +20,6 @@ BASE_URL = "https://api.bitget.com"
 
 def generate_signature(timestamp, method, request_path, body=""):
     message = str(timestamp) + method.upper() + request_path + body
-    import base64
     signature = hmac.new(
         BITGET_SECRET_KEY.encode("utf-8"),
         message.encode("utf-8"),
@@ -49,25 +49,16 @@ def get_current_price(symbol):
 
 def set_leverage(symbol, leverage):
     path = "/api/v2/mix/account/set-leverage"
-    body = json.dumps({
-        "symbol":      symbol,
-        "productType": "USDT-FUTURES",
-        "marginCoin":  "USDT",
-        "leverage":    str(leverage),
-        "holdSide":    "long"
-    })
-    headers = get_headers("POST", path, body)
-    requests.post(BASE_URL + path, headers=headers, data=body)
-
-    body2 = json.dumps({
-        "symbol":      symbol,
-        "productType": "USDT-FUTURES",
-        "marginCoin":  "USDT",
-        "leverage":    str(leverage),
-        "holdSide":    "short"
-    })
-    headers2 = get_headers("POST", path, body2)
-    requests.post(BASE_URL + path, headers=headers2, data=body2)
+    for side in ["long", "short"]:
+        body = json.dumps({
+            "symbol":      symbol,
+            "productType": "USDT-FUTURES",
+            "marginCoin":  "USDT",
+            "leverage":    str(leverage),
+            "holdSide":    side
+        })
+        headers = get_headers("POST", path, body)
+        requests.post(BASE_URL + path, headers=headers, data=body)
 
 def place_order(symbol, side, size_usdt):
     price = get_current_price(symbol)
@@ -91,42 +82,57 @@ def place_order(symbol, side, size_usdt):
     return response.json()
 
 def close_position(symbol):
-    path = f"/api/v2/mix/position/single-position?symbol={symbol}&productType=USDT-FUTURES&marginCoin=USDT"
+    # 全ポジションを取得
+    path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     headers = get_headers("GET", path)
     response = requests.get(BASE_URL + path, headers=headers)
     data = response.json()
+    
+    print(f"全ポジション取得結果: {data}")
 
     if data.get("code") != "00000" or not data.get("data"):
         return {"message": "ポジションなし"}
 
     results = []
     for pos in data["data"]:
-        if float(pos.get("available", 0)) > 0:
-            hold_side = pos["holdSide"]
-            close_side = "sell" if hold_side == "long" else "buy"
-            qty = pos["available"]
-            close_path = "/api/v2/mix/order/place-order"
-            body = json.dumps({
-                "symbol":      symbol,
-                "productType": "USDT-FUTURES",
-                "marginMode":  "isolated",
-                "marginCoin":  "USDT",
-                "size":        str(qty),
-                "side":        close_side,
-                "tradeSide":   "close",
-                "orderType":   "market",
-                "force":       "gtc"
-            })
-            headers2 = get_headers("POST", close_path, body)
-            r = requests.post(BASE_URL + close_path, headers=headers2, data=body)
-            results.append(r.json())
+        # 対象シンボルのみ
+        if pos.get("symbol") != symbol:
+            continue
+        
+        total = float(pos.get("total", 0))
+        available = float(pos.get("available", 0))
+        
+        if total <= 0:
+            continue
+            
+        hold_side = pos["holdSide"]
+        close_side = "sell" if hold_side == "long" else "buy"
+        qty = str(available) if available > 0 else str(total)
+
+        print(f"決済実行: {symbol} {hold_side} → {close_side} 数量:{qty}")
+
+        close_path = "/api/v2/mix/order/place-order"
+        body = json.dumps({
+            "symbol":      symbol,
+            "productType": "USDT-FUTURES",
+            "marginMode":  "isolated",
+            "marginCoin":  "USDT",
+            "size":        qty,
+            "side":        close_side,
+            "tradeSide":   "close",
+            "orderType":   "market",
+            "force":       "gtc"
+        })
+        headers2 = get_headers("POST", close_path, body)
+        r = requests.post(BASE_URL + close_path, headers=headers2, data=body)
+        results.append(r.json())
+        print(f"決済結果: {r.json()}")
 
     return results if results else {"message": "決済するポジションなし"}
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        # JSONを取得
         if request.is_json:
             data = request.get_json()
         else:
@@ -134,7 +140,7 @@ def webhook():
 
         print(f"受信データ: {data}")
 
-        # 数値データは無視（TradingViewの誤送信）
+        # 数値データは無視
         if isinstance(data, (int, float)):
             print("数値データを無視")
             return jsonify({"status": "ignored"}), 200
