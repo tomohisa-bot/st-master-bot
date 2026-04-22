@@ -75,6 +75,10 @@ def get_current_position(symbol):
             return pos["holdSide"]
     return "none"
 
+def round_price(price):
+    """Bitgetの価格単位（0.1）に丸める"""
+    return round(round(price * 10) / 10, 1)
+
 def place_order(symbol, side, size_usdt, stop_loss_price=None):
     price = get_current_price(symbol)
     if not price:
@@ -94,9 +98,10 @@ def place_order(symbol, side, size_usdt, stop_loss_price=None):
         "force":       "gtc"
     }
     
-    # SL価格が指定されている場合は追加
     if stop_loss_price:
-        order_body["presetStopLossPrice"] = str(round(stop_loss_price, 2))
+        sl_rounded = round_price(stop_loss_price)
+        order_body["presetStopLossPrice"] = str(sl_rounded)
+        print(f"SL価格設定: {stop_loss_price} → 丸め後: {sl_rounded}")
     
     body = json.dumps(order_body)
     headers = get_headers("POST", path, body)
@@ -156,12 +161,10 @@ def webhook():
 
         print(f"受信データ: {data}")
 
-        # 数値データは無視
         if isinstance(data, (int, float)):
             print("数値データを無視")
             return jsonify({"status": "ignored"}), 200
 
-        # シークレットキー認証
         if data.get("secret") != WEBHOOK_SECRET:
             print("認証失敗")
             return jsonify({"error": "認証失敗"}), 403
@@ -169,7 +172,6 @@ def webhook():
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSDT")
         
-        # SL価格をWebhookから受け取る
         sl_price = data.get("sl_price", None)
         if sl_price:
             sl_price = float(sl_price)
@@ -177,7 +179,6 @@ def webhook():
 
         set_leverage(symbol, LEVERAGE)
 
-        # 現在のポジション確認
         current_pos = get_current_position(symbol)
         print(f"現在のポジション: {current_pos}")
 
