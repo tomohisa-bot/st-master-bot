@@ -18,6 +18,21 @@ ORDER_SIZE_USDT = 10
 LEVERAGE        = 1
 BASE_URL = "https://api.bitget.com"
 
+# 銘柄ごとの価格刻み幅
+TICK_SIZE = {
+    "BTCUSDT": 0.1,
+    "ETHUSDT": 0.01,
+    "XRPUSDT": 0.0001,
+}
+
+def get_tick_size(symbol):
+    return TICK_SIZE.get(symbol, 0.1)
+
+def round_price(price, symbol):
+    """銘柄ごとの刻み幅に合わせて価格を丸める"""
+    tick = get_tick_size(symbol)
+    return round(round(price / tick) * tick, 10)
+
 def generate_signature(timestamp, method, request_path, body=""):
     message = str(timestamp) + method.upper() + request_path + body
     signature = hmac.new(
@@ -75,10 +90,6 @@ def get_current_position(symbol):
             return pos["holdSide"]
     return "none"
 
-def round_price(price):
-    """Bitgetの価格単位（0.1）に丸める"""
-    return round(round(price * 10) / 10, 1)
-
 def place_order(symbol, side, size_usdt, stop_loss_price=None):
     price = get_current_price(symbol)
     if not price:
@@ -99,9 +110,9 @@ def place_order(symbol, side, size_usdt, stop_loss_price=None):
     }
     
     if stop_loss_price:
-        sl_rounded = round_price(stop_loss_price)
+        sl_rounded = round_price(stop_loss_price, symbol)
         order_body["presetStopLossPrice"] = str(sl_rounded)
-        print(f"SL価格設定: {stop_loss_price} → 丸め後: {sl_rounded}")
+        print(f"SL価格設定: {stop_loss_price} → 丸め後: {sl_rounded} (tick:{get_tick_size(symbol)})")
     
     body = json.dumps(order_body)
     headers = get_headers("POST", path, body)
