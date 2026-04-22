@@ -14,29 +14,65 @@ BITGET_SECRET_KEY = os.environ.get("BITGET_SECRET_KEY", "")
 BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE", "")
 WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 
-ORDER_SIZE_USDT = 10
-LEVERAGE        = 1
+LEVERAGE = 1
 BASE_URL = "https://api.bitget.com"
 
+# ✅ 通貨別注文サイズ（USDT）
+ORDER_SIZE = {
+    "BTCUSDT": 10,
+    "ETHUSDT": 25,
+    "XRPUSDT": 10,
+    "SOLUSDT": 15,
+}
+
+# ✅ 通貨別価格刻み幅
 TICK_SIZE = {
     "BTCUSDT": 0.1,
     "ETHUSDT": 0.01,
     "XRPUSDT": 0.0001,
+    "SOLUSDT": 0.001,
 }
 
-# v6: 部分利確済みフラグ（シンボルごとに管理）
+# ✅ 通貨別最小注文数量
+MIN_QTY = {
+    "BTCUSDT": 0.001,
+    "ETHUSDT": 0.01,
+    "XRPUSDT": 1.0,
+    "SOLUSDT": 0.1,
+}
+
+# ✅ 通貨別数量小数点桁数
+QTY_DECIMALS = {
+    "BTCUSDT": 3,
+    "ETHUSDT": 2,
+    "XRPUSDT": 0,
+    "SOLUSDT": 1,
+}
+
+# v6: 部分利確済みフラグ
 partial_closed = {
     "BTCUSDT": False,
     "ETHUSDT": False,
     "XRPUSDT": False,
+    "SOLUSDT": False,
 }
 
 def get_tick_size(symbol):
     return TICK_SIZE.get(symbol, 0.1)
 
+def get_min_qty(symbol):
+    return MIN_QTY.get(symbol, 0.001)
+
+def get_qty_decimals(symbol):
+    return QTY_DECIMALS.get(symbol, 3)
+
 def round_price(price, symbol):
     tick = get_tick_size(symbol)
     return round(round(price / tick) * tick, 10)
+
+def round_qty(qty, symbol):
+    decimals = get_qty_decimals(symbol)
+    return round(qty, decimals)
 
 def generate_signature(timestamp, method, request_path, body=""):
     message = str(timestamp) + method.upper() + request_path + body
@@ -96,7 +132,6 @@ def get_current_position(symbol):
     return "none"
 
 def get_position_detail(symbol):
-    """ポジション詳細（holdSide + total）を返す"""
     path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     headers = get_headers("GET", path)
     response = requests.get(BASE_URL + path, headers=headers)
@@ -116,7 +151,6 @@ def get_position_detail(symbol):
     return None
 
 def cancel_all_orders(symbol):
-    """全ての未決済注文（SL含む）をキャンセル"""
     path = "/api/v2/mix/order/cancel-all-orders"
     body = json.dumps({
         "symbol":      symbol,
@@ -129,13 +163,23 @@ def cancel_all_orders(symbol):
     print(f"注文キャンセル結果: {result}")
     return result
 
-def place_order(symbol, side, size_usdt, stop_loss_price=None):
+def place_order(symbol, side, stop_loss_price=None):
     price = get_current_price(symbol)
     if not price:
         return {"error": "価格取得失敗"}
-    qty = round(size_usdt / price, 4)
-    path = "/api/v2/mix/order/place-order"
 
+    size_usdt = ORDER_SIZE.get(symbol, 10)
+    raw_qty   = size_usdt / price
+    qty       = round_qty(raw_qty, symbol)
+    min_qty   = get_min_qty(symbol)
+
+    print(f"注文数量計算: {size_usdt} USDT ÷ {price} = {raw_qty} → 丸め後: {qty} (最小:{min_qty})")
+
+    if qty < min_qty:
+        print(f"⚠️ 数量不足 → 最小数量に切り上げ: {qty} → {min_qty}")
+        qty = min_qty
+
+    path = "/api/v2/mix/order/place-order"
     order_body = {
         "symbol":      symbol,
         "productType": "USDT-FUTURES",
@@ -161,9 +205,6 @@ def place_order(symbol, side, size_usdt, stop_loss_price=None):
     return result
 
 def close_position(symbol):
-    """
-    全量決済（flash-close優先 → 失敗時place-order）
-    """
     print(f"注文キャンセル開始: {symbol}")
     cancel_all_orders(symbol)
     time.sleep(0.8)
@@ -184,7 +225,6 @@ def close_position(symbol):
 
         total     = float(pos.get("total", 0))
         available = float(pos.get("available", 0))
-
         if total <= 0:
             continue
 
@@ -193,7 +233,6 @@ def close_position(symbol):
         qty = max(total, available)
         print(f"決済数量決定: total={total}, available={available}, 使用数量={qty}")
 
-        # flash-close API
         flash_path = "/api/v2/mix/order/close-positions"
         flash_body = json.dumps({
             "symbol":      symbol,
@@ -208,11 +247,9 @@ def close_position(symbol):
         if flash_result.get("code") == "00000":
             results.append(flash_result)
             print(f"✅ flash-closeで決済成功: {symbol} {hold_side}")
-            # v6: 決済完了 → 部分利確フラグリセット
             partial_closed[symbol] = False
             continue
 
-        # フォールバック: place-order
         print(f"⚠️ flash-close失敗 → place-orderで決済試行: 数量={qty}")
         close_path = "/api/v2/mix/order/place-order"
         body = json.dumps({
@@ -232,28 +269,21 @@ def close_position(symbol):
         result = r.json()
         results.append(result)
         print(f"決済結果: {result}")
-        # v6: 決済完了 → 部分利確フラグリセット
         partial_closed[symbol] = False
 
     return results if results else {"message": "決済するポジションなし"}
 
 
 def partial_close_position(symbol, percent=50):
-    """
-    v6新機能: 部分利確（指定%のポジションを決済）
-    """
     print(f"部分利確開始: {symbol} {percent}%")
 
-    # 重複防止チェック
     if partial_closed.get(symbol, False):
         print(f"⚠️ {symbol} は既に部分利確済み → スキップ")
         return {"message": "既に部分利確済み"}
 
-    # SLキャンセル
     cancel_all_orders(symbol)
     time.sleep(0.8)
 
-    # ポジション取得
     pos = get_position_detail(symbol)
     if not pos:
         return {"message": "ポジションなし"}
@@ -262,9 +292,15 @@ def partial_close_position(symbol, percent=50):
     total      = pos["total"]
     close_side = "sell" if hold_side == "long" else "buy"
 
-    # 決済数量 = total × percent%
-    qty = round(total * (percent / 100), 4)
-    print(f"部分利確数量: total={total} × {percent}% = {qty}")
+    raw_qty = total * (percent / 100)
+    qty     = round_qty(raw_qty, symbol)
+    min_qty = get_min_qty(symbol)
+
+    print(f"部分利確数量: total={total} × {percent}% = {raw_qty} → 丸め後: {qty} (最小:{min_qty})")
+
+    if qty < min_qty:
+        print(f"⚠️ 部分利確数量不足 → 最小数量に切り上げ: {qty} → {min_qty}")
+        qty = min_qty
 
     if qty <= 0:
         return {"error": "決済数量が0以下"}
@@ -317,6 +353,10 @@ def webhook():
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSDT")
 
+        if symbol not in ORDER_SIZE:
+            print(f"⚠️ 未対応シンボル: {symbol}")
+            return jsonify({"error": f"未対応シンボル: {symbol}"}), 400
+
         sl_price = data.get("sl_price", None)
         if sl_price:
             sl_price = float(sl_price)
@@ -335,9 +375,9 @@ def webhook():
                 print("ショートポジションを先に決済")
                 close_position(symbol)
                 time.sleep(1)
-            partial_closed[symbol] = False  # フラグリセット
+            partial_closed[symbol] = False
             print(f"ロング注文: {symbol} SL:{sl_price}")
-            result = place_order(symbol, "buy", ORDER_SIZE_USDT, sl_price)
+            result = place_order(symbol, "buy", sl_price)
             return jsonify({"status": "ロング注文送信", "result": result})
 
         elif action == "short":
@@ -348,13 +388,12 @@ def webhook():
                 print("ロングポジションを先に決済")
                 close_position(symbol)
                 time.sleep(1)
-            partial_closed[symbol] = False  # フラグリセット
+            partial_closed[symbol] = False
             print(f"ショート注文: {symbol} SL:{sl_price}")
-            result = place_order(symbol, "sell", ORDER_SIZE_USDT, sl_price)
+            result = place_order(symbol, "sell", sl_price)
             return jsonify({"status": "ショート注文送信", "result": result})
 
         elif action == "partial_close":
-            # v6: 部分利確
             percent = float(data.get("percent", 50))
             reason  = data.get("reason", "TP1")
             print(f"部分利確リクエスト: {symbol} {percent}% reason={reason}")
@@ -376,7 +415,12 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "稼働中", "message": "Bitget Bot v6 is running!"})
+    return jsonify({
+        "status": "稼働中",
+        "message": "Bitget Bot v6 is running!",
+        "symbols": list(ORDER_SIZE.keys()),
+        "order_sizes": ORDER_SIZE
+    })
 
 @app.route("/price/<symbol>", methods=["GET"])
 def check_price(symbol):
@@ -385,8 +429,11 @@ def check_price(symbol):
 
 @app.route("/status", methods=["GET"])
 def status():
-    """v6: 部分利確フラグ確認用エンドポイント"""
-    return jsonify({"partial_closed": partial_closed})
+    return jsonify({
+        "partial_closed": partial_closed,
+        "order_sizes":    ORDER_SIZE,
+        "min_qty":        MIN_QTY
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
