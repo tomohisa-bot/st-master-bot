@@ -61,31 +61,28 @@ def set_leverage(symbol, leverage):
         requests.post(BASE_URL + path, headers=headers, data=body)
 
 def get_current_position(symbol):
-    """現在のポジションを取得。'long', 'short', 'none'を返す"""
     path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     headers = get_headers("GET", path)
     response = requests.get(BASE_URL + path, headers=headers)
     data = response.json()
-    
     if data.get("code") != "00000" or not data.get("data"):
         return "none"
-    
     for pos in data["data"]:
         if pos.get("symbol") != symbol:
             continue
         total = float(pos.get("total", 0))
         if total > 0:
-            return pos["holdSide"]  # "long" or "short"
-    
+            return pos["holdSide"]
     return "none"
 
-def place_order(symbol, side, size_usdt):
+def place_order(symbol, side, size_usdt, stop_loss_price=None):
     price = get_current_price(symbol)
     if not price:
         return {"error": "価格取得失敗"}
     qty = round(size_usdt / price, 4)
     path = "/api/v2/mix/order/place-order"
-    body = json.dumps({
+    
+    order_body = {
         "symbol":      symbol,
         "productType": "USDT-FUTURES",
         "marginMode":  "isolated",
@@ -95,17 +92,24 @@ def place_order(symbol, side, size_usdt):
         "tradeSide":   "open",
         "orderType":   "market",
         "force":       "gtc"
-    })
+    }
+    
+    # SL価格が指定されている場合は追加
+    if stop_loss_price:
+        order_body["presetStopLossPrice"] = str(round(stop_loss_price, 2))
+    
+    body = json.dumps(order_body)
     headers = get_headers("POST", path, body)
     response = requests.post(BASE_URL + path, headers=headers, data=body)
-    return response.json()
+    result = response.json()
+    print(f"注文結果: {result}")
+    return result
 
 def close_position(symbol):
     path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     headers = get_headers("GET", path)
     response = requests.get(BASE_URL + path, headers=headers)
     data = response.json()
-    
     print(f"全ポジション取得結果: {data}")
 
     if data.get("code") != "00000" or not data.get("data"):
@@ -164,6 +168,12 @@ def webhook():
 
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSDT")
+        
+        # SL価格をWebhookから受け取る
+        sl_price = data.get("sl_price", None)
+        if sl_price:
+            sl_price = float(sl_price)
+            print(f"SL価格受信: {sl_price}")
 
         set_leverage(symbol, LEVERAGE)
 
@@ -179,9 +189,8 @@ def webhook():
                 print("ショートポジションを先に決済")
                 close_position(symbol)
                 time.sleep(1)
-            print(f"ロング注文: {symbol}")
-            result = place_order(symbol, "buy", ORDER_SIZE_USDT)
-            print(f"注文結果: {result}")
+            print(f"ロング注文: {symbol} SL:{sl_price}")
+            result = place_order(symbol, "buy", ORDER_SIZE_USDT, sl_price)
             return jsonify({"status": "ロング注文送信", "result": result})
 
         elif action == "short":
@@ -192,9 +201,8 @@ def webhook():
                 print("ロングポジションを先に決済")
                 close_position(symbol)
                 time.sleep(1)
-            print(f"ショート注文: {symbol}")
-            result = place_order(symbol, "sell", ORDER_SIZE_USDT)
-            print(f"注文結果: {result}")
+            print(f"ショート注文: {symbol} SL:{sl_price}")
+            result = place_order(symbol, "sell", ORDER_SIZE_USDT, sl_price)
             return jsonify({"status": "ショート注文送信", "result": result})
 
         elif action == "close":
