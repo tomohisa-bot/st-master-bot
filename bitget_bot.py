@@ -60,6 +60,25 @@ def set_leverage(symbol, leverage):
         headers = get_headers("POST", path, body)
         requests.post(BASE_URL + path, headers=headers, data=body)
 
+def get_current_position(symbol):
+    """現在のポジションを取得。'long', 'short', 'none'を返す"""
+    path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
+    headers = get_headers("GET", path)
+    response = requests.get(BASE_URL + path, headers=headers)
+    data = response.json()
+    
+    if data.get("code") != "00000" or not data.get("data"):
+        return "none"
+    
+    for pos in data["data"]:
+        if pos.get("symbol") != symbol:
+            continue
+        total = float(pos.get("total", 0))
+        if total > 0:
+            return pos["holdSide"]  # "long" or "short"
+    
+    return "none"
+
 def place_order(symbol, side, size_usdt):
     price = get_current_price(symbol)
     if not price:
@@ -82,7 +101,6 @@ def place_order(symbol, side, size_usdt):
     return response.json()
 
 def close_position(symbol):
-    # 全ポジションを取得
     path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     headers = get_headers("GET", path)
     response = requests.get(BASE_URL + path, headers=headers)
@@ -95,22 +113,16 @@ def close_position(symbol):
 
     results = []
     for pos in data["data"]:
-        # 対象シンボルのみ
         if pos.get("symbol") != symbol:
             continue
-        
         total = float(pos.get("total", 0))
         available = float(pos.get("available", 0))
-        
         if total <= 0:
             continue
-            
         hold_side = pos["holdSide"]
         close_side = "sell" if hold_side == "long" else "buy"
         qty = str(available) if available > 0 else str(total)
-
         print(f"決済実行: {symbol} {hold_side} → {close_side} 数量:{qty}")
-
         close_path = "/api/v2/mix/order/place-order"
         body = json.dumps({
             "symbol":      symbol,
@@ -155,13 +167,31 @@ def webhook():
 
         set_leverage(symbol, LEVERAGE)
 
+        # 現在のポジション確認
+        current_pos = get_current_position(symbol)
+        print(f"現在のポジション: {current_pos}")
+
         if action == "long":
+            if current_pos == "long":
+                print("既にロングポジションあり → スキップ")
+                return jsonify({"status": "スキップ（既にロング）"})
+            if current_pos == "short":
+                print("ショートポジションを先に決済")
+                close_position(symbol)
+                time.sleep(1)
             print(f"ロング注文: {symbol}")
             result = place_order(symbol, "buy", ORDER_SIZE_USDT)
             print(f"注文結果: {result}")
             return jsonify({"status": "ロング注文送信", "result": result})
 
         elif action == "short":
+            if current_pos == "short":
+                print("既にショートポジションあり → スキップ")
+                return jsonify({"status": "スキップ（既にショート）"})
+            if current_pos == "long":
+                print("ロングポジションを先に決済")
+                close_position(symbol)
+                time.sleep(1)
             print(f"ショート注文: {symbol}")
             result = place_order(symbol, "sell", ORDER_SIZE_USDT)
             print(f"注文結果: {result}")
