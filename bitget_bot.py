@@ -134,11 +134,20 @@ def place_order(symbol, side, size_usdt, stop_loss_price=None):
     return result
 
 def close_position(symbol):
-    # まず全注文をキャンセル（SL注文のロックを解除）
+    """
+    ✅ 修正版 close_position
+    - STEP1: 全注文キャンセル（SLロック解除）
+    - STEP2: ポジション確認（total / availableの大きい方を使用）
+    - STEP3: flash-close API（一括決済）で決済
+    - STEP4: flash-closeが失敗した場合、place-orderで直接決済
+    """
+
+    # STEP1: SL注文をキャンセル
     print(f"注文キャンセル開始: {symbol}")
     cancel_all_orders(symbol)
-    time.sleep(0.5)
+    time.sleep(0.8)  # キャンセル処理の反映待ち
 
+    # STEP2: ポジション確認
     path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     headers = get_headers("GET", path)
     response = requests.get(BASE_URL + path, headers=headers)
@@ -152,29 +161,57 @@ def close_position(symbol):
     for pos in data["data"]:
         if pos.get("symbol") != symbol:
             continue
-        total = float(pos.get("total", 0))
+
+        total     = float(pos.get("total", 0))
+        available = float(pos.get("available", 0))
+
         if total <= 0:
             continue
-        hold_side = pos["holdSide"]
+
+        hold_side  = pos["holdSide"]
         close_side = "sell" if hold_side == "long" else "buy"
-        qty = str(total)
-        print(f"決済実行: {symbol} {hold_side} → {close_side} 数量:{qty}")
+
+        # ✅ total と available の大きい方を使用（SLキャンセル後は total == available になるはず）
+        qty = max(total, available)
+        print(f"決済数量決定: total={total}, available={available}, 使用数量={qty}")
+
+        # STEP3: flash-close API で一括決済を試みる
+        flash_path = "/api/v2/mix/order/close-positions"
+        flash_body = json.dumps({
+            "symbol":      symbol,
+            "productType": "USDT-FUTURES",
+            "holdSide":    hold_side
+        })
+        flash_headers = get_headers("POST", flash_path, flash_body)
+        flash_response = requests.post(BASE_URL + flash_path, headers=flash_headers, data=flash_body)
+        flash_result = flash_response.json()
+        print(f"flash-close結果: {flash_result}")
+
+        if flash_result.get("code") == "00000":
+            results.append(flash_result)
+            print(f"✅ flash-closeで決済成功: {symbol} {hold_side}")
+            continue
+
+        # STEP4: flash-close失敗時 → place-orderで直接決済
+        print(f"⚠️ flash-close失敗 → place-orderで決済試行: 数量={qty}")
         close_path = "/api/v2/mix/order/place-order"
         body = json.dumps({
             "symbol":      symbol,
             "productType": "USDT-FUTURES",
             "marginMode":  "isolated",
             "marginCoin":  "USDT",
-            "size":        qty,
+            "size":        str(qty),
             "side":        close_side,
             "tradeSide":   "close",
             "orderType":   "market",
-            "force":       "gtc"
+            "force":       "gtc",
+            "reduceOnly":  "YES"   # ✅ ポジション縮小のみ（新規建てを防ぐ）
         })
         headers2 = get_headers("POST", close_path, body)
         r = requests.post(BASE_URL + close_path, headers=headers2, data=body)
-        results.append(r.json())
-        print(f"決済結果: {r.json()}")
+        result = r.json()
+        results.append(result)
+        print(f"決済結果: {result}")
 
     return results if results else {"message": "決済するポジションなし"}
 
