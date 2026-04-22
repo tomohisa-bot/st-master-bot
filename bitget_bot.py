@@ -18,7 +18,6 @@ ORDER_SIZE_USDT = 10
 LEVERAGE        = 1
 BASE_URL = "https://api.bitget.com"
 
-# 銘柄ごとの価格刻み幅
 TICK_SIZE = {
     "BTCUSDT": 0.1,
     "ETHUSDT": 0.01,
@@ -29,7 +28,6 @@ def get_tick_size(symbol):
     return TICK_SIZE.get(symbol, 0.1)
 
 def round_price(price, symbol):
-    """銘柄ごとの刻み幅に合わせて価格を丸める"""
     tick = get_tick_size(symbol)
     return round(round(price / tick) * tick, 10)
 
@@ -90,6 +88,20 @@ def get_current_position(symbol):
             return pos["holdSide"]
     return "none"
 
+def cancel_all_orders(symbol):
+    """全ての未決済注文（SL含む）をキャンセル"""
+    path = "/api/v2/mix/order/cancel-all-orders"
+    body = json.dumps({
+        "symbol":      symbol,
+        "productType": "USDT-FUTURES",
+        "marginCoin":  "USDT"
+    })
+    headers = get_headers("POST", path, body)
+    response = requests.post(BASE_URL + path, headers=headers, data=body)
+    result = response.json()
+    print(f"注文キャンセル結果: {result}")
+    return result
+
 def place_order(symbol, side, size_usdt, stop_loss_price=None):
     price = get_current_price(symbol)
     if not price:
@@ -112,7 +124,7 @@ def place_order(symbol, side, size_usdt, stop_loss_price=None):
     if stop_loss_price:
         sl_rounded = round_price(stop_loss_price, symbol)
         order_body["presetStopLossPrice"] = str(sl_rounded)
-        print(f"SL価格設定: {stop_loss_price} → 丸め後: {sl_rounded} (tick:{get_tick_size(symbol)})")
+        print(f"SL価格設定: {stop_loss_price} → 丸め後: {sl_rounded}")
     
     body = json.dumps(order_body)
     headers = get_headers("POST", path, body)
@@ -122,6 +134,11 @@ def place_order(symbol, side, size_usdt, stop_loss_price=None):
     return result
 
 def close_position(symbol):
+    # まず全注文をキャンセル（SL注文のロックを解除）
+    print(f"注文キャンセル開始: {symbol}")
+    cancel_all_orders(symbol)
+    time.sleep(0.5)
+
     path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
     headers = get_headers("GET", path)
     response = requests.get(BASE_URL + path, headers=headers)
@@ -136,12 +153,11 @@ def close_position(symbol):
         if pos.get("symbol") != symbol:
             continue
         total = float(pos.get("total", 0))
-        available = float(pos.get("available", 0))
         if total <= 0:
             continue
         hold_side = pos["holdSide"]
         close_side = "sell" if hold_side == "long" else "buy"
-        qty = str(available) if available > 0 else str(total)
+        qty = str(total)
         print(f"決済実行: {symbol} {hold_side} → {close_side} 数量:{qty}")
         close_path = "/api/v2/mix/order/place-order"
         body = json.dumps({
