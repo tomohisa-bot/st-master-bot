@@ -17,44 +17,45 @@ WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 LEVERAGE = 1
 BASE_URL = "https://api.bitget.com"
 
-# ✅ 通貨別注文サイズ（USDT）
+# ✅ 5通貨対応（DOGE追加）
 ORDER_SIZE = {
-    "BTCUSDT": 10,
-    "ETHUSDT": 25,
-    "XRPUSDT": 10,
-    "SOLUSDT": 15,
+    "BTCUSDT":  10,
+    "ETHUSDT":  25,
+    "XRPUSDT":  10,
+    "SOLUSDT":  15,
+    "DOGEUSDT": 10,
 }
 
-# ✅ 通貨別価格刻み幅
 TICK_SIZE = {
-    "BTCUSDT": 0.1,
-    "ETHUSDT": 0.01,
-    "XRPUSDT": 0.0001,
-    "SOLUSDT": 0.001,
+    "BTCUSDT":  0.1,
+    "ETHUSDT":  0.01,
+    "XRPUSDT":  0.0001,
+    "SOLUSDT":  0.001,
+    "DOGEUSDT": 0.00001,
 }
 
-# ✅ 通貨別最小注文数量
 MIN_QTY = {
-    "BTCUSDT": 0.001,
-    "ETHUSDT": 0.01,
-    "XRPUSDT": 1.0,
-    "SOLUSDT": 0.1,
+    "BTCUSDT":  0.001,
+    "ETHUSDT":  0.01,
+    "XRPUSDT":  1.0,
+    "SOLUSDT":  0.1,
+    "DOGEUSDT": 1.0,
 }
 
-# ✅ 通貨別数量小数点桁数
 QTY_DECIMALS = {
-    "BTCUSDT": 3,
-    "ETHUSDT": 2,
-    "XRPUSDT": 0,
-    "SOLUSDT": 1,
+    "BTCUSDT":  3,
+    "ETHUSDT":  2,
+    "XRPUSDT":  0,
+    "SOLUSDT":  1,
+    "DOGEUSDT": 0,
 }
 
-# v6: 部分利確済みフラグ
 partial_closed = {
-    "BTCUSDT": False,
-    "ETHUSDT": False,
-    "XRPUSDT": False,
-    "SOLUSDT": False,
+    "BTCUSDT":  False,
+    "ETHUSDT":  False,
+    "XRPUSDT":  False,
+    "SOLUSDT":  False,
+    "DOGEUSDT": False,
 }
 
 def get_tick_size(symbol):
@@ -222,7 +223,6 @@ def close_position(symbol):
     for pos in data["data"]:
         if pos.get("symbol") != symbol:
             continue
-
         total     = float(pos.get("total", 0))
         available = float(pos.get("available", 0))
         if total <= 0:
@@ -395,7 +395,7 @@ def webhook():
 
         elif action == "partial_close":
             percent = float(data.get("percent", 50))
-            reason  = data.get("reason", "TP1")
+            reason  = data.get("reason", "HULL_FLIP")
             print(f"部分利確リクエスト: {symbol} {percent}% reason={reason}")
             result = partial_close_position(symbol, percent)
             return jsonify({"status": f"部分利確完了({percent}%)", "result": result})
@@ -417,7 +417,7 @@ def webhook():
 def health():
     return jsonify({
         "status": "稼働中",
-        "message": "Bitget Bot v6 is running!",
+        "message": "Bitget Bot v7 is running!",
         "symbols": list(ORDER_SIZE.keys()),
         "order_sizes": ORDER_SIZE
     })
