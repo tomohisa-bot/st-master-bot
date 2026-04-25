@@ -16,12 +16,12 @@ WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 
 BASE_URL = "https://api.bitget.com"
 
-# ✅ 9通貨対応（BNB追加）
+# 8通貨対応
 ORDER_SIZE = {
     "BTCUSDT":  10,
-    "ETHUSDT":  25,
+    "ETHUSDT":  10,
     "XRPUSDT":  10,
-    "SOLUSDT":  15,
+    "SOLUSDT":  10,
     "DOGEUSDT": 10,
     "BNBUSDT":  10,
     "SUIUSDT":  10,
@@ -61,12 +61,13 @@ QTY_DECIMALS = {
     "ADAUSDT":  0,
 }
 
-grid_state = {symbol: {"position": "none", "grid_count": 0, "entry_price": 0}
-              for symbol in ORDER_SIZE}
-
-def round_price(price, symbol):
-    tick = TICK_SIZE.get(symbol, 0.1)
-    return round(round(price / tick) * tick, 10)
+# 状態管理
+hedge_state = {symbol: {
+    "short_count": 0,
+    "long_count": 0,
+    "hedge_active": False,
+    "hedge_side": None,
+} for symbol in ORDER_SIZE}
 
 def round_qty(qty, symbol):
     decimals = QTY_DECIMALS.get(symbol, 3)
@@ -114,20 +115,60 @@ def set_leverage(symbol, leverage):
         headers = get_headers("POST", path, body)
         requests.post(BASE_URL + path, headers=headers, data=body)
 
-def get_current_position(symbol):
-    path = f"/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
-    headers = get_headers("GET", path)
-    response = requests.get(BASE_URL + path, headers=headers)
-    data = response.json()
-    if data.get("code") != "00000" or not data.get("data"):
-        return "none"
-    for pos in data["data"]:
-        if pos.get("symbol") != symbol:
-            continue
-        total = float(pos.get("total", 0))
-        if total > 0:
-            return pos["holdSide"]
-    return "none"
+def place_order(symbol, side, trade_side, size_usdt, leverage=1):
+    """
+    side: buy or sell
+    trade_side: open or close
+    """
+    price = get_current_price(symbol)
+    if not price:
+        return {"error": "価格取得失敗"}
+
+    raw_qty = size_usdt / price
+    qty     = round_qty(raw_qty, symbol)
+    min_qty = MIN_QTY.get(symbol, 0.001)
+
+    if qty < min_qty:
+        qty = min_qty
+
+    print(f"注文: {symbol} {side} {trade_side} {qty} (${size_usdt})")
+
+    path = "/api/v2/mix/order/place-order"
+    order_body = {
+        "symbol":      symbol,
+        "productType": "USDT-FUTURES",
+        "marginMode":  "isolated",
+        "marginCoin":  "USDT",
+        "size":        str(qty),
+        "side":        side,
+        "tradeSide":   trade_side,
+        "orderType":   "market",
+        "force":       "gtc"
+    }
+
+    body = json.dumps(order_body)
+    headers = get_headers("POST", path, body)
+    response = requests.post(BASE_URL + path, headers=headers, data=body)
+    result = response.json()
+    print(f"注文結果: {result}")
+    return result
+
+def close_positions_by_side(symbol, hold_side):
+    """指定サイドのポジションをflash-closeで決済"""
+    cancel_all_orders(symbol)
+    time.sleep(0.5)
+
+    flash_path = "/api/v2/mix/order/close-positions"
+    flash_body = json.dumps({
+        "symbol":      symbol,
+        "productType": "USDT-FUTURES",
+        "holdSide":    hold_side
+    })
+    flash_headers = get_headers("POST", flash_path, flash_body)
+    flash_response = requests.post(BASE_URL + flash_path, headers=flash_headers, data=flash_body)
+    result = flash_response.json()
+    print(f"flash-close({hold_side}): {result}")
+    return result
 
 def cancel_all_orders(symbol):
     path = "/api/v2/mix/order/cancel-all-orders"
@@ -139,61 +180,8 @@ def cancel_all_orders(symbol):
     headers = get_headers("POST", path, body)
     response = requests.post(BASE_URL + path, headers=headers, data=body)
     result = response.json()
-    print(f"注文キャンセル結果: {result}")
+    print(f"注文キャンセル: {result}")
     return result
-
-def place_order(symbol, side, size_usdt, leverage=5):
-    price = get_current_price(symbol)
-    if not price:
-        return {"error": "価格取得失敗"}
-    raw_qty = size_usdt / price
-    qty     = round_qty(raw_qty, symbol)
-    min_qty = MIN_QTY.get(symbol, 0.001)
-    if qty < min_qty:
-        qty = min_qty
-    print(f"注文: {symbol} {side} {qty} (${size_usdt} / {price})")
-    path = "/api/v2/mix/order/place-order"
-    order_body = {
-        "symbol":      symbol,
-        "productType": "USDT-FUTURES",
-        "marginMode":  "isolated",
-        "marginCoin":  "USDT",
-        "size":        str(qty),
-        "side":        side,
-        "tradeSide":   "open",
-        "orderType":   "market",
-        "force":       "gtc"
-    }
-    body = json.dumps(order_body)
-    headers = get_headers("POST", path, body)
-    response = requests.post(BASE_URL + path, headers=headers, data=body)
-    result = response.json()
-    print(f"注文結果: {result}")
-    return result
-
-def close_all_positions(symbol):
-    print(f"全決済開始: {symbol}")
-    cancel_all_orders(symbol)
-    time.sleep(0.8)
-    flash_path = "/api/v2/mix/order/close-positions"
-    results = []
-    for hold_side in ["long", "short"]:
-        flash_body = json.dumps({
-            "symbol":      symbol,
-            "productType": "USDT-FUTURES",
-            "holdSide":    hold_side
-        })
-        flash_headers = get_headers("POST", flash_path, flash_body)
-        flash_response = requests.post(BASE_URL + flash_path, headers=flash_headers, data=flash_body)
-        flash_result = flash_response.json()
-        print(f"flash-close({hold_side}): {flash_result}")
-        if flash_result.get("code") == "00000":
-            success_list = flash_result.get("data", {}).get("successList", [])
-            if success_list:
-                results.append(flash_result)
-                print(f"✅ 決済成功: {symbol} {hold_side}")
-    grid_state[symbol] = {"position": "none", "grid_count": 0, "entry_price": 0}
-    return results if results else {"message": "決済するポジションなし"}
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -202,62 +190,89 @@ def webhook():
             data = request.get_json()
         else:
             data = json.loads(request.data.decode('utf-8'))
-        print(f"受信データ: {data}")
+
+        print(f"受信: {data}")
+
         if isinstance(data, (int, float)):
-            print("数値データを無視")
             return jsonify({"status": "ignored"}), 200
+
         if data.get("secret") != WEBHOOK_SECRET:
-            print("認証失敗")
             return jsonify({"error": "認証失敗"}), 403
+
         action   = data.get("action", "").lower()
         symbol   = data.get("symbol", "BTCUSDT")
-        leverage = int(data.get("leverage", 5))
+        leverage = int(data.get("leverage", 1))
+        grid     = int(data.get("grid", 1))
+
         if symbol not in ORDER_SIZE:
-            return jsonify({"error": f"未対応シンボル: {symbol}"}), 400
+            return jsonify({"error": f"未対応: {symbol}"}), 400
+
         size_usdt = ORDER_SIZE.get(symbol, 10)
         set_leverage(symbol, leverage)
-        state = grid_state[symbol]
-        print(f"グリッド状態[{symbol}]: {state}")
 
-        if action == "long":
-            current_pos = get_current_position(symbol)
-            if current_pos != "none":
-                print(f"既にポジションあり → スキップ")
-                return jsonify({"status": "スキップ"})
-            price = get_current_price(symbol)
-            grid_state[symbol] = {"position": "long", "grid_count": 1, "entry_price": price}
-            result = place_order(symbol, "buy", size_usdt, leverage)
-            print(f"✅ グリッドロング1段目: {symbol}")
-            return jsonify({"status": "グリッドロング1段目", "result": result})
+        state = hedge_state[symbol]
+        print(f"状態[{symbol}]: {state}")
 
-        elif action == "short":
-            current_pos = get_current_position(symbol)
-            if current_pos != "none":
-                print(f"既にポジションあり → スキップ")
-                return jsonify({"status": "スキップ"})
-            price = get_current_price(symbol)
-            grid_state[symbol] = {"position": "short", "grid_count": 1, "entry_price": price}
-            result = place_order(symbol, "sell", size_usdt, leverage)
-            print(f"✅ グリッドショート1段目: {symbol}")
-            return jsonify({"status": "グリッドショート1段目", "result": result})
+        # ✅ ショートエントリー（段階追加）
+        if action == "short":
+            result = place_order(symbol, "sell", "open", size_usdt, leverage)
+            state["short_count"] = grid
+            print(f"✅ ショート{grid}段目: {symbol}")
+            return jsonify({"status": f"ショート{grid}段目", "result": result})
 
-        elif action == "grid_add":
-            grid_num = int(data.get("grid", 2))
-            if state["position"] == "none":
-                return jsonify({"status": "スキップ（ポジションなし）"})
-            side = "buy" if state["position"] == "long" else "sell"
-            grid_state[symbol]["grid_count"] = grid_num
-            result = place_order(symbol, side, size_usdt, leverage)
-            print(f"✅ グリッド{grid_num}段目追加: {symbol}")
-            return jsonify({"status": f"グリッド{grid_num}段目", "result": result})
+        # ✅ ロングエントリー（段階追加）
+        elif action == "long":
+            result = place_order(symbol, "buy", "open", size_usdt, leverage)
+            state["long_count"] = grid
+            print(f"✅ ロング{grid}段目: {symbol}")
+            return jsonify({"status": f"ロング{grid}段目", "result": result})
 
-        elif action == "close_all":
-            reason = data.get("reason", "")
-            print(f"全決済: {symbol} reason={reason}")
-            result = close_all_positions(symbol)
-            emoji  = "💰" if reason == "TP" else "🚨" if reason == "MAX_LOSS" else "🛑"
-            print(f"{emoji} 全決済完了: {symbol} {reason}")
-            return jsonify({"status": f"全決済完了({reason})", "result": result})
+        # ✅ ヘッジロング追加（ショート積み上げへのヘッジ）
+        elif action == "hedge_long":
+            # ショートの合計段階数分のUSDTをヘッジ
+            hedge_size = size_usdt * state["short_count"]
+            result = place_order(symbol, "buy", "open", hedge_size, leverage)
+            state["hedge_active"] = True
+            state["hedge_side"]   = "long"
+            print(f"🛡 ヘッジロング追加: {symbol} {hedge_size}USDT（手動利確）")
+            return jsonify({"status": "ヘッジロング追加（手動利確してください）", "result": result})
+
+        # ✅ ヘッジショート追加（ロング積み上げへのヘッジ）
+        elif action == "hedge_short":
+            hedge_size = size_usdt * state["long_count"]
+            result = place_order(symbol, "sell", "open", hedge_size, leverage)
+            state["hedge_active"] = True
+            state["hedge_side"]   = "short"
+            print(f"🛡 ヘッジショート追加: {symbol} {hedge_size}USDT（手動利確）")
+            return jsonify({"status": "ヘッジショート追加（手動利確してください）", "result": result})
+
+        # ✅ ショート本体自動利確（ヘッジは除く）
+        elif action == "close_short":
+            result = close_positions_by_side(symbol, "short")
+            state["short_count"] = 0
+            print(f"💰 ショート本体自動利確: {symbol}")
+            return jsonify({"status": "ショート本体利確完了（ヘッジは手動で）", "result": result})
+
+        # ✅ ロング本体自動利確（ヘッジは除く）
+        elif action == "close_long":
+            result = close_positions_by_side(symbol, "long")
+            state["long_count"] = 0
+            print(f"💰 ロング本体自動利確: {symbol}")
+            return jsonify({"status": "ロング本体利確完了（ヘッジは手動で）", "result": result})
+
+        # 従来のclose（後方互換）
+        elif action == "close":
+            cancel_all_orders(symbol)
+            time.sleep(0.5)
+            results = []
+            for side in ["long", "short"]:
+                r = close_positions_by_side(symbol, side)
+                results.append(r)
+            state["short_count"]  = 0
+            state["long_count"]   = 0
+            state["hedge_active"] = False
+            state["hedge_side"]   = None
+            return jsonify({"status": "全決済完了", "result": results})
 
         else:
             return jsonify({"error": f"不明なアクション: {action}"}), 400
@@ -270,8 +285,7 @@ def webhook():
 def health():
     return jsonify({
         "status":  "稼働中",
-        "message": "Grid Master Bot v1.3 running!",
-        "version": "Grid Master v1.3 (9通貨対応)",
+        "message": "BB Hedge Bot v1 running!",
         "symbols": list(ORDER_SIZE.keys()),
         "order_sizes": ORDER_SIZE
     })
@@ -279,7 +293,7 @@ def health():
 @app.route("/status", methods=["GET"])
 def status():
     return jsonify({
-        "grid_state":  grid_state,
+        "hedge_state": hedge_state,
         "order_sizes": ORDER_SIZE,
         "min_qty":     MIN_QTY
     })
