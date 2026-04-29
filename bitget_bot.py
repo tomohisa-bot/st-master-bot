@@ -19,7 +19,7 @@ BASE_URL = "https://api.bitget.com"
 # ✅ 9通貨対応（BGB追加）
 ORDER_SIZE = {
     "BTCUSDT":  50,
-    "ETHUSDT":  10,
+    "ETHUSDT":  50,
     "XRPUSDT":  10,
     "SOLUSDT":  10,
     "DOGEUSDT": 10,
