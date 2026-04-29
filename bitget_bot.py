@@ -16,17 +16,17 @@ WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 
 BASE_URL = "https://api.bitget.com"
 
-# ✅ 9通貨対応（BGB追加）
+# ✅ 9通貨対応
 ORDER_SIZE = {
     "BTCUSDT":  50,
     "ETHUSDT":  50,
-    "XRPUSDT":  10,
+    "XRPUSDT":  50,
     "SOLUSDT":  10,
     "DOGEUSDT": 10,
-    "BNBUSDT":  10,
+    "BNBUSDT":  50,
     "SUIUSDT":  10,
     "ADAUSDT":  10,
-    "BGBUSDT":  10,  # ✅ BGB追加
+    "BGBUSDT":  10,
 }
 
 TICK_SIZE = {
@@ -38,7 +38,7 @@ TICK_SIZE = {
     "BNBUSDT":  0.01,
     "SUIUSDT":  0.0001,
     "ADAUSDT":  0.0001,
-    "BGBUSDT":  0.0001,  # ✅ BGB
+    "BGBUSDT":  0.0001,
 }
 
 MIN_QTY = {
@@ -50,7 +50,7 @@ MIN_QTY = {
     "BNBUSDT":  0.01,
     "SUIUSDT":  1.0,
     "ADAUSDT":  1.0,
-    "BGBUSDT":  1.0,  # ✅ BGB
+    "BGBUSDT":  1.0,
 }
 
 QTY_DECIMALS = {
@@ -62,7 +62,7 @@ QTY_DECIMALS = {
     "BNBUSDT":  2,
     "SUIUSDT":  0,
     "ADAUSDT":  0,
-    "BGBUSDT":  0,  # ✅ BGB（整数）
+    "BGBUSDT":  0,
 }
 
 def round_qty(qty, symbol):
@@ -99,17 +99,28 @@ def get_current_price(symbol):
     return None
 
 def set_leverage(symbol, leverage):
+    """
+    ✅ 修正：エラー40883対策
+    ポジションが既にある場合はレバレッジ変更できないため
+    エラーを無視して注文を続行する
+    """
     path = "/api/v2/mix/account/set-leverage"
     for side in ["long", "short"]:
-        body = json.dumps({
-            "symbol":      symbol,
-            "productType": "USDT-FUTURES",
-            "marginCoin":  "USDT",
-            "leverage":    str(leverage),
-            "holdSide":    side
-        })
-        headers = get_headers("POST", path, body)
-        requests.post(BASE_URL + path, headers=headers, data=body)
+        try:
+            body = json.dumps({
+                "symbol":      symbol,
+                "productType": "USDT-FUTURES",
+                "marginCoin":  "USDT",
+                "leverage":    str(leverage),
+                "holdSide":    side
+            })
+            headers = get_headers("POST", path, body)
+            result = requests.post(BASE_URL + path, headers=headers, data=body)
+            data = result.json()
+            if data.get("code") != "00000":
+                print(f"⚠️ レバレッジ設定スキップ ({side}): {data.get('msg', '')} → 注文は続行")
+        except Exception as e:
+            print(f"⚠️ レバレッジ設定エラー ({side}): {e} → 注文は続行")
 
 def place_order(symbol, side, trade_side, size_usdt, leverage=1):
     price = get_current_price(symbol)
@@ -196,6 +207,8 @@ def webhook():
             return jsonify({"error": f"未対応: {symbol}"}), 400
 
         size_usdt = ORDER_SIZE.get(symbol, 10)
+
+        # ✅ レバレッジ設定（エラーがあっても注文は続行）
         set_leverage(symbol, leverage)
 
         # ✅ ロングエントリー
@@ -210,40 +223,40 @@ def webhook():
             print(f"✅ ショート: {symbol}")
             return jsonify({"status": "ショートエントリー", "result": result})
 
-        # ✅ グリッド追加（BB Hedge Bot用）
+        # ✅ グリッド追加
         elif action == "grid_add":
             side = data.get("side", "buy")
             result = place_order(symbol, side, "open", size_usdt, leverage)
             print(f"✅ グリッド{grid}段目追加: {symbol}")
             return jsonify({"status": f"グリッド{grid}段目", "result": result})
 
-        # ✅ ヘッジロング（BB Hedge Bot用）
+        # ✅ ヘッジロング
         elif action == "hedge_long":
             hedge_size = size_usdt * grid
             result = place_order(symbol, "buy", "open", hedge_size, leverage)
             print(f"🛡 ヘッジロング: {symbol} {hedge_size}USDT")
             return jsonify({"status": "ヘッジロング（手動利確）", "result": result})
 
-        # ✅ ヘッジショート（BB Hedge Bot用）
+        # ✅ ヘッジショート
         elif action == "hedge_short":
             hedge_size = size_usdt * grid
             result = place_order(symbol, "sell", "open", hedge_size, leverage)
             print(f"🛡 ヘッジショート: {symbol} {hedge_size}USDT")
             return jsonify({"status": "ヘッジショート（手動利確）", "result": result})
 
-        # ✅ ショート本体利確
+        # ✅ ショート決済
         elif action == "close_short":
             result = close_positions_by_side(symbol, "short")
             print(f"💰 ショート利確: {symbol}")
             return jsonify({"status": "ショート利確", "result": result})
 
-        # ✅ ロング本体利確
+        # ✅ ロング決済
         elif action == "close_long":
             result = close_positions_by_side(symbol, "long")
             print(f"💰 ロング利確: {symbol}")
             return jsonify({"status": "ロング利確", "result": result})
 
-        # ✅ 全決済（v7・NEW EMA用）
+        # ✅ 全決済
         elif action in ["close", "close_all"]:
             results = close_all_positions(symbol)
             reason = data.get("reason", "")
@@ -261,7 +274,7 @@ def webhook():
 def health():
     return jsonify({
         "status":  "稼働中",
-        "message": "Bitget Bot Final - 9通貨対応",
+        "message": "Bitget Bot - 9通貨対応（エラー40883修正済み）",
         "symbols": list(ORDER_SIZE.keys()),
         "order_sizes": ORDER_SIZE
     })
