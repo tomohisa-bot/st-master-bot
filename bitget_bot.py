@@ -188,11 +188,27 @@ def close_all_positions(symbol):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        if request.is_json:
-            data = request.get_json()
-        else:
-            data = json.loads(request.data.decode('utf-8'))
+        # ✅ 修正：空データ・不正JSONへの対策
+        raw_data = request.data.decode('utf-8').strip()
+        if not raw_data:
+            print("⚠️ 空のリクエストを受信 → 無視")
+            return jsonify({"status": "ignored_empty"}), 200
+
+        try:
+            if request.is_json:
+                data = request.get_json(force=True, silent=True)
+            else:
+                data = json.loads(raw_data)
+        except Exception as parse_err:
+            print(f"⚠️ JSONパースエラー: {parse_err} → 受信データ: {raw_data[:100]}")
+            return jsonify({"status": "ignored_parse_error"}), 200
+
+        if not data or not isinstance(data, dict):
+            print(f"⚠️ 無効なデータ形式 → 無視: {raw_data[:100]}")
+            return jsonify({"status": "ignored_invalid"}), 200
+
         print(f"受信: {data}")
+
         if isinstance(data, (int, float)):
             return jsonify({"status": "ignored"}), 200
         if data.get("secret") != WEBHOOK_SECRET:
@@ -244,16 +260,24 @@ def webhook():
             print(f"🛡 ヘッジショート: {symbol} {hedge_size}USDT")
             return jsonify({"status": "ヘッジショート（手動利確）", "result": result})
 
-        # ✅ ショート決済
+        # ✅ ショート決済（ポジションなしでもエラーにしない）
         elif action == "close_short":
             result = close_positions_by_side(symbol, "short")
-            print(f"💰 ショート利確: {symbol}")
+            code = result.get("code", "")
+            if code == "22002":
+                print(f"ℹ️ ショートポジションなし（正常）: {symbol}")
+            else:
+                print(f"💰 ショート利確: {symbol}")
             return jsonify({"status": "ショート利確", "result": result})
 
-        # ✅ ロング決済
+        # ✅ ロング決済（ポジションなしでもエラーにしない）
         elif action == "close_long":
             result = close_positions_by_side(symbol, "long")
-            print(f"💰 ロング利確: {symbol}")
+            code = result.get("code", "")
+            if code == "22002":
+                print(f"ℹ️ ロングポジションなし（正常）: {symbol}")
+            else:
+                print(f"💰 ロング利確: {symbol}")
             return jsonify({"status": "ロング利確", "result": result})
 
         # ✅ 全決済
