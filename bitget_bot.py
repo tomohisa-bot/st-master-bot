@@ -198,7 +198,7 @@ def webhook():
             return jsonify({"error": f"未対応: {symbol}"}), 400
 
         size_usdt = ORDER_SIZE.get(symbol, 10)
-        set_leverage(symbol, leverage)
+        # ✅ set_leverageを削除（Bitget側で手動設定済みのため）
 
         if action == "long":
             result = place_order(symbol, "buy", "open", size_usdt, leverage)
