@@ -6,6 +6,7 @@ import requests
 import json
 import os
 import base64
+from collections import deque
 
 app = Flask(__name__)
 
@@ -15,6 +16,9 @@ BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE", "")
 WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 
 BASE_URL = "https://api.bitget.com"
+
+# ===== MT5用注文キュー =====
+mt5_queue = deque(maxlen=100)
 
 ORDER_SIZE = {
     "BTCUSDT":  50,
@@ -26,18 +30,6 @@ ORDER_SIZE = {
     "SUIUSDT":  10,
     "ADAUSDT":  10,
     "BGBUSDT":  10,
-}
-
-TICK_SIZE = {
-    "BTCUSDT":  0.1,
-    "ETHUSDT":  0.01,
-    "XRPUSDT":  0.0001,
-    "SOLUSDT":  0.001,
-    "DOGEUSDT": 0.00001,
-    "BNBUSDT":  0.01,
-    "SUIUSDT":  0.0001,
-    "ADAUSDT":  0.0001,
-    "BGBUSDT":  0.0001,
 }
 
 MIN_QTY = {
@@ -64,7 +56,6 @@ QTY_DECIMALS = {
     "BGBUSDT":  0,
 }
 
-# Vantage MT5用ロットサイズ設定
 MT5_LOT_SIZE = {
     "BTCUSD": 0.01,
 }
@@ -102,32 +93,15 @@ def get_current_price(symbol):
         return float(data["data"][0]["lastPr"])
     return None
 
-def set_leverage(symbol, leverage):
-    path = "/api/v2/mix/account/set-leverage"
-    for side in ["long", "short"]:
-        try:
-            body = json.dumps({
-                "symbol":      symbol,
-                "productType": "USDT-FUTURES",
-                "marginCoin":  "USDT",
-                "leverage":    str(leverage),
-                "holdSide":    side
-            })
-            headers = get_headers("POST", path, body)
-            requests.post(BASE_URL + path, headers=headers, data=body)
-        except Exception as e:
-            print(f"レバレッジ設定スキップ: {e}")
-
 def place_order(symbol, side, trade_side, size_usdt, leverage=1):
     price = get_current_price(symbol)
     if not price:
         return {"error": "価格取得失敗"}
     raw_qty = size_usdt / price
-    qty     = round_qty(raw_qty, symbol)
+    qty = round_qty(raw_qty, symbol)
     min_qty = MIN_QTY.get(symbol, 0.001)
     if qty < min_qty:
         qty = min_qty
-    print(f"注文: {symbol} {side} {trade_side} {qty} (${size_usdt})")
     path = "/api/v2/mix/order/place-order"
     body = json.dumps({
         "symbol":      symbol,
@@ -168,9 +142,7 @@ def close_positions_by_side(symbol, hold_side):
     })
     headers = get_headers("POST", path, body)
     response = requests.post(BASE_URL + path, headers=headers, data=body)
-    result = response.json()
-    print(f"決済({hold_side}): {result}")
-    return result
+    return response.json()
 
 def close_all_positions(symbol):
     cancel_all_orders(symbol)
@@ -189,7 +161,6 @@ def webhook():
             data = request.get_json()
         else:
             data = json.loads(request.data.decode('utf-8'))
-        print(f"受信: {data}")
         if isinstance(data, (int, float)):
             return jsonify({"status": "ignored"}), 200
         if data.get("secret") != WEBHOOK_SECRET:
@@ -211,18 +182,6 @@ def webhook():
         elif action == "short":
             result = place_order(symbol, "sell", "open", size_usdt, leverage)
             return jsonify({"status": "ショートエントリー", "result": result})
-        elif action == "grid_add":
-            side = data.get("side", "buy")
-            result = place_order(symbol, side, "open", size_usdt, leverage)
-            return jsonify({"status": f"グリッド{grid}段目", "result": result})
-        elif action == "hedge_long":
-            hedge_size = size_usdt * grid
-            result = place_order(symbol, "buy", "open", hedge_size, leverage)
-            return jsonify({"status": "ヘッジロング", "result": result})
-        elif action == "hedge_short":
-            hedge_size = size_usdt * grid
-            result = place_order(symbol, "sell", "open", hedge_size, leverage)
-            return jsonify({"status": "ヘッジショート", "result": result})
         elif action == "close_short":
             result = close_positions_by_side(symbol, "short")
             return jsonify({"status": "ショート利確", "result": result})
@@ -231,46 +190,62 @@ def webhook():
             return jsonify({"status": "ロング利確", "result": result})
         elif action in ["close", "close_all"]:
             results = close_all_positions(symbol)
-            reason = data.get("reason", "")
-            return jsonify({"status": f"全決済({reason})", "result": results})
+            return jsonify({"status": "全決済", "result": results})
         else:
             return jsonify({"error": f"不明: {action}"}), 400
 
     except Exception as e:
-        print(f"エラー: {e}")
         return jsonify({"error": str(e)}), 500
 
-# ===== Vantage MT5用Webhook =====
+# ===== Vantage MT5用Webhook（キューに保存）=====
 @app.route("/mt5order", methods=["POST"])
 def mt5order():
     try:
         data = request.get_json()
         if data.get("secret") != WEBHOOK_SECRET:
             return jsonify({"error": "認証失敗"}), 403
-        action = data.get("action", "")
-        symbol = data.get("symbol", "BTCUSD")
-        lots   = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.01)))
-        print(f"MT5注文受信: {action} {symbol} {lots}lot")
-        return jsonify({"status": "受信OK", "action": action, "symbol": symbol, "lots": lots})
+        order = {
+            "action": data.get("action", ""),
+            "symbol": data.get("symbol", "BTCUSD"),
+            "lots":   float(data.get("lots", 0.01)),
+            "grid":   int(data.get("grid", 1)),
+            "time":   int(time.time())
+        }
+        mt5_queue.append(order)
+        print(f"✅ MT5キュー追加: {order}")
+        return jsonify({"status": "OK", "order": order})
     except Exception as e:
-        print(f"MT5エラー: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ===== MT5 EAがポーリングで取得 =====
+@app.route("/mt5poll", methods=["GET"])
+def mt5poll():
+    try:
+        secret = request.args.get("secret", "")
+        if secret != WEBHOOK_SECRET:
+            return jsonify({"error": "認証失敗"}), 403
+        if len(mt5_queue) == 0:
+            return jsonify({"status": "empty", "order": None})
+        order = mt5_queue.popleft()
+        print(f"📤 MT5へ送信: {order}")
+        return jsonify({"status": "order", "order": order})
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # ===== ヘルスチェック =====
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({
-        "status":  "稼働中",
-        "message": "Bitget + Vantage MT5 Bot",
-        "symbols": list(ORDER_SIZE.keys()),
-        "order_sizes": ORDER_SIZE
+        "status":    "稼働中",
+        "message":   "Bitget + Vantage MT5 Bot",
+        "mt5_queue": len(mt5_queue)
     })
 
 @app.route("/status", methods=["GET"])
 def status():
     return jsonify({
         "order_sizes": ORDER_SIZE,
-        "min_qty":     MIN_QTY
+        "mt5_queue":   len(mt5_queue)
     })
 
 @app.route("/price/<symbol>", methods=["GET"])
