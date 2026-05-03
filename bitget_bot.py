@@ -64,6 +64,11 @@ QTY_DECIMALS = {
     "BGBUSDT":  0,
 }
 
+# Vantage MT5用ロットサイズ設定
+MT5_LOT_SIZE = {
+    "BTCUSD": 0.01,
+}
+
 def round_qty(qty, symbol):
     decimals = QTY_DECIMALS.get(symbol, 3)
     return round(qty, decimals)
@@ -176,6 +181,7 @@ def close_all_positions(symbol):
         results.append(r)
     return results
 
+# ===== Bitget用Webhook =====
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -198,48 +204,35 @@ def webhook():
             return jsonify({"error": f"未対応: {symbol}"}), 400
 
         size_usdt = ORDER_SIZE.get(symbol, 10)
-        # ✅ set_leverageを削除（Bitget側で手動設定済みのため）
 
         if action == "long":
             result = place_order(symbol, "buy", "open", size_usdt, leverage)
-            print(f"✅ ロング: {symbol}")
             return jsonify({"status": "ロングエントリー", "result": result})
-
         elif action == "short":
             result = place_order(symbol, "sell", "open", size_usdt, leverage)
-            print(f"✅ ショート: {symbol}")
             return jsonify({"status": "ショートエントリー", "result": result})
-
         elif action == "grid_add":
             side = data.get("side", "buy")
             result = place_order(symbol, side, "open", size_usdt, leverage)
             return jsonify({"status": f"グリッド{grid}段目", "result": result})
-
         elif action == "hedge_long":
             hedge_size = size_usdt * grid
             result = place_order(symbol, "buy", "open", hedge_size, leverage)
             return jsonify({"status": "ヘッジロング", "result": result})
-
         elif action == "hedge_short":
             hedge_size = size_usdt * grid
             result = place_order(symbol, "sell", "open", hedge_size, leverage)
             return jsonify({"status": "ヘッジショート", "result": result})
-
         elif action == "close_short":
             result = close_positions_by_side(symbol, "short")
-            print(f"💰 ショート利確: {symbol}")
             return jsonify({"status": "ショート利確", "result": result})
-
         elif action == "close_long":
             result = close_positions_by_side(symbol, "long")
-            print(f"💰 ロング利確: {symbol}")
             return jsonify({"status": "ロング利確", "result": result})
-
         elif action in ["close", "close_all"]:
             results = close_all_positions(symbol)
             reason = data.get("reason", "")
             return jsonify({"status": f"全決済({reason})", "result": results})
-
         else:
             return jsonify({"error": f"不明: {action}"}), 400
 
@@ -247,11 +240,28 @@ def webhook():
         print(f"エラー: {e}")
         return jsonify({"error": str(e)}), 500
 
+# ===== Vantage MT5用Webhook =====
+@app.route("/mt5order", methods=["POST"])
+def mt5order():
+    try:
+        data = request.get_json()
+        if data.get("secret") != WEBHOOK_SECRET:
+            return jsonify({"error": "認証失敗"}), 403
+        action = data.get("action", "")
+        symbol = data.get("symbol", "BTCUSD")
+        lots   = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.01)))
+        print(f"MT5注文受信: {action} {symbol} {lots}lot")
+        return jsonify({"status": "受信OK", "action": action, "symbol": symbol, "lots": lots})
+    except Exception as e:
+        print(f"MT5エラー: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ===== ヘルスチェック =====
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({
         "status":  "稼働中",
-        "message": "Bitget Bot - 9通貨対応",
+        "message": "Bitget + Vantage MT5 Bot",
         "symbols": list(ORDER_SIZE.keys()),
         "order_sizes": ORDER_SIZE
     })
