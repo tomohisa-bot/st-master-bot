@@ -204,16 +204,61 @@ def mt5order():
         data = request.get_json()
         if data.get("secret") != WEBHOOK_SECRET:
             return jsonify({"error": "認証失敗"}), 403
-        order = {
-            "action": data.get("action", ""),
-            "symbol": data.get("symbol", "BTCUSD"),
-            "lots":   float(data.get("lots", 0.01)),
-            "grid":   int(data.get("grid", 1)),
-            "time":   int(time.time())
-        }
-        mt5_queue.append(order)
-        print(f"✅ MT5キュー追加: {order}")
-        return jsonify({"status": "OK", "order": order})
+
+        action = data.get("action", "").lower()
+        symbol = data.get("symbol", "BTCUSD")
+        lots   = float(data.get("lots", 0.01))
+
+        orders_to_add = []
+
+        # ドテン処理：ロングエントリー時に既存ショートを閉じる
+        if action == "long":
+            orders_to_add.append({
+                "action": "close_short",
+                "symbol": symbol,
+                "lots":   lots,
+                "time":   int(time.time())
+            })
+            orders_to_add.append({
+                "action": "long",
+                "symbol": symbol,
+                "lots":   lots,
+                "time":   int(time.time())
+            })
+
+        # ドテン処理：ショートエントリー時に既存ロングを閉じる
+        elif action == "short":
+            orders_to_add.append({
+                "action": "close_long",
+                "symbol": symbol,
+                "lots":   lots,
+                "time":   int(time.time())
+            })
+            orders_to_add.append({
+                "action": "short",
+                "symbol": symbol,
+                "lots":   lots,
+                "time":   int(time.time())
+            })
+
+        # TP（利確）はそのままキューに追加
+        elif action in ["close_long", "close_short"]:
+            orders_to_add.append({
+                "action": action,
+                "symbol": symbol,
+                "lots":   lots,
+                "time":   int(time.time())
+            })
+
+        else:
+            return jsonify({"error": f"不明なaction: {action}"}), 400
+
+        for order in orders_to_add:
+            mt5_queue.append(order)
+            print(f"✅ MT5キュー追加: {order}")
+
+        return jsonify({"status": "OK", "queued": len(orders_to_add)})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
