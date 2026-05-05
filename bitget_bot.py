@@ -17,8 +17,9 @@ WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 
 BASE_URL = "https://api.bitget.com"
 
-# ===== MT5用注文キュー =====
-mt5_queue = deque(maxlen=100)
+# ===== MT5用シンボル別キュー =====
+MT5_SYMBOLS = ["BTCUSD", "ETHUSD", "BTCXAU", "TRUMPUSD"]
+mt5_queues = {symbol: deque(maxlen=100) for symbol in MT5_SYMBOLS}
 
 ORDER_SIZE = {
     "BTCUSDT":  50,
@@ -57,9 +58,9 @@ QTY_DECIMALS = {
 }
 
 MT5_LOT_SIZE = {
-    "BTCUSD":  0.01,
-    "ETHUSD":  0.01,
-    "BTCXAU":  0.01,
+    "BTCUSD":   0.01,
+    "ETHUSD":   0.01,
+    "BTCXAU":   0.01,
     "TRUMPUSD": 0.01,
 }
 
@@ -172,7 +173,6 @@ def webhook():
         action   = data.get("action", "").lower()
         symbol   = data.get("symbol", "BTCUSDT")
         leverage = int(data.get("leverage", 1))
-        grid     = int(data.get("grid", 1))
 
         if symbol not in ORDER_SIZE:
             return jsonify({"error": f"未対応: {symbol}"}), 400
@@ -200,9 +200,7 @@ def webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ===== Vantage MT5用Webhook（キューに保存）=====
-# ドテン処理はEA側（v5.20）で完結しているため、
-# ここではシグナルをそのままキューに積むだけ
+# ===== Vantage MT5用Webhook（シンボル別キューに保存）=====
 @app.route("/mt5order", methods=["POST"])
 def mt5order():
     try:
@@ -217,49 +215,67 @@ def mt5order():
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
 
+        # 未登録シンボルは動的に追加
+        if symbol not in mt5_queues:
+            mt5_queues[symbol] = deque(maxlen=100)
+            print(f"✅ 新規シンボルキュー作成: {symbol}")
+
         order = {
             "action": action,
             "symbol": symbol,
             "lots":   lots,
             "time":   int(time.time())
         }
-        mt5_queue.append(order)
-        print(f"✅ MT5キュー追加: {order}")
+        mt5_queues[symbol].append(order)
+        print(f"✅ MT5キュー追加 [{symbol}]: {order}")
 
         return jsonify({"status": "OK", "order": order})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ===== MT5 EAがポーリングで取得 =====
+# ===== MT5 EAがシンボル指定でポーリング =====
 @app.route("/mt5poll", methods=["GET"])
 def mt5poll():
     try:
         secret = request.args.get("secret", "")
         if secret != WEBHOOK_SECRET:
             return jsonify({"error": "認証失敗"}), 403
-        if len(mt5_queue) == 0:
+
+        symbol = request.args.get("symbol", "")
+        if not symbol:
+            return jsonify({"error": "symbolパラメータが必要です"}), 400
+
+        if symbol not in mt5_queues:
+            mt5_queues[symbol] = deque(maxlen=100)
+
+        queue = mt5_queues[symbol]
+        if len(queue) == 0:
             return jsonify({"status": "empty", "order": None})
-        order = mt5_queue.popleft()
-        print(f"📤 MT5へ送信: {order}")
+
+        order = queue.popleft()
+        print(f"📤 MT5へ送信 [{symbol}]: {order}")
         return jsonify({"status": "order", "order": order})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # ===== ヘルスチェック =====
 @app.route("/", methods=["GET"])
 def health():
+    queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
     return jsonify({
         "status":    "稼働中",
         "message":   "Bitget + Vantage MT5 Bot",
-        "mt5_queue": len(mt5_queue)
+        "mt5_queues": queue_status
     })
 
 @app.route("/status", methods=["GET"])
 def status():
+    queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
     return jsonify({
         "order_sizes": ORDER_SIZE,
-        "mt5_queue":   len(mt5_queue)
+        "mt5_queues":  queue_status
     })
 
 @app.route("/price/<symbol>", methods=["GET"])
