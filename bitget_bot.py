@@ -57,11 +57,12 @@ QTY_DECIMALS = {
     "BGBUSDT":  0,
 }
 
+# ===== MT5ロットサイズ（3分割用に0.03設定）=====
 MT5_LOT_SIZE = {
-    "BTCUSD":   0.03,
-    "ETHUSD":   0.03,
-    "BTCXAU":   0.03,
-    "TRUMPUSD": 0.01,
+    "BTCUSD":   0.03,  # 3分割 → 1回0.01ずつ
+    "ETHUSD":   0.03,  # 3分割 → 1回0.01ずつ
+    "BTCXAU":   0.03,  # 3分割 → 1回0.01ずつ
+    "TRUMPUSD": 0.01,  # そのまま
 }
 
 def round_qty(qty, symbol):
@@ -210,12 +211,11 @@ def mt5order():
 
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSD")
-        lots   = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.01)))
+        lots   = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.03)))
 
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
 
-        # 未登録シンボルは動的に追加
         if symbol not in mt5_queues:
             mt5_queues[symbol] = deque(maxlen=100)
             print(f"✅ 新規シンボルキュー作成: {symbol}")
