@@ -58,9 +58,9 @@ QTY_DECIMALS = {
 }
 
 MT5_LOT_SIZE = {
-    "BTCUSD":   0.01,
-    "ETHUSD":   0.01,
-    "BTCXAU":   0.01,
+    "BTCUSD":   0.03,
+    "ETHUSD":   0.03,
+    "BTCXAU":   0.03,
     "TRUMPUSD": 0.01,
 }
 
