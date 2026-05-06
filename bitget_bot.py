@@ -58,6 +58,7 @@ QTY_DECIMALS = {
 }
 
 # ===== MT5ロットサイズ（10%×10回分割用に0.10設定）=====
+# ★TradingViewのWebhookメッセージのlotsは無視してここの値を使用
 MT5_LOT_SIZE = {
     "BTCUSD": 0.10,
     "ETHUSD": 0.10,
@@ -210,7 +211,9 @@ def mt5order():
 
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSD")
-        lots   = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.10)))
+
+        # ★TradingViewのlots値は無視してMT5_LOT_SIZEを強制使用
+        lots = MT5_LOT_SIZE.get(symbol, 0.10)
 
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
