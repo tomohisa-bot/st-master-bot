@@ -18,7 +18,7 @@ WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 BASE_URL = "https://api.bitget.com"
 
 # ===== MT5用シンボル別キュー =====
-MT5_SYMBOLS = ["BTCUSD", "ETHUSD", "BTCXAU", "TRUMPUSD"]
+MT5_SYMBOLS = ["BTCUSD", "ETHUSD", "BNBUSD"]
 mt5_queues = {symbol: deque(maxlen=100) for symbol in MT5_SYMBOLS}
 
 ORDER_SIZE = {
@@ -57,12 +57,11 @@ QTY_DECIMALS = {
     "BGBUSDT":  0,
 }
 
-# ===== MT5ロットサイズ（3分割用に0.03設定）=====
+# ===== MT5ロットサイズ（10%×10回分割用に0.10設定）=====
 MT5_LOT_SIZE = {
-    "BTCUSD":   0.03,  # 3分割 → 1回0.01ずつ
-    "ETHUSD":   0.03,  # 3分割 → 1回0.01ずつ
-    "BTCXAU":   0.01,  # 3分割 → 1回0.01ずつ
-    "TRUMPUSD": 0.01,  # そのまま
+    "BTCUSD": 0.10,
+    "ETHUSD": 0.10,
+    "BNBUSD": 0.10,
 }
 
 def round_qty(qty, symbol):
@@ -211,7 +210,7 @@ def mt5order():
 
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSD")
-        lots   = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.03)))
+        lots   = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.10)))
 
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
