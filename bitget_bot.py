@@ -57,12 +57,15 @@ QTY_DECIMALS = {
     "BGBUSDT":  0,
 }
 
-# ===== MT5ロットサイズ（10%×10回分割用に0.10設定）=====
-# ★TradingViewのWebhookメッセージのlotsは無視してここの値を使用
+# ===== MT5ロットサイズ（3回分割用）=====
+# BTCUSD 0.03lot → 1回0.01ずつ × 3回
+# ETHUSD 0.09lot → 1回0.03ずつ × 3回
+# BNBUSD 0.30lot → 1回0.10ずつ × 3回
+# ★TradingViewのlotsは無視してここの値を強制使用
 MT5_LOT_SIZE = {
-    "BTCUSD": 0.10,
-    "ETHUSD": 0.10,
-    "BNBUSD": 0.10,
+    "BTCUSD": 0.03,
+    "ETHUSD": 0.09,
+    "BNBUSD": 0.30,
 }
 
 def round_qty(qty, symbol):
@@ -213,7 +216,7 @@ def mt5order():
         symbol = data.get("symbol", "BTCUSD")
 
         # ★TradingViewのlots値は無視してMT5_LOT_SIZEを強制使用
-        lots = MT5_LOT_SIZE.get(symbol, 0.10)
+        lots = MT5_LOT_SIZE.get(symbol, 0.03)
 
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
