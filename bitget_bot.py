@@ -18,7 +18,7 @@ WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 BASE_URL = "https://api.bitget.com"
 
 # ===== MT5用シンボル別キュー =====
-MT5_SYMBOLS = ["BTCUSD", "ETHUSD", "BNBUSD"]
+MT5_SYMBOLS = ["BTCUSD", "ETHUSD", "BNBUSD", "XAUUSD", "EURUSD"]
 mt5_queues = {symbol: deque(maxlen=100) for symbol in MT5_SYMBOLS}
 
 ORDER_SIZE = {
@@ -58,14 +58,13 @@ QTY_DECIMALS = {
 }
 
 # ===== MT5ロットサイズ（3回分割用）=====
-# BTCUSD 0.03lot → 1回0.01ずつ × 3回
-# ETHUSD 0.09lot → 1回0.03ずつ × 3回
-# BNBUSD 0.30lot → 1回0.10ずつ × 3回
 # ★TradingViewのlotsは無視してここの値を強制使用
 MT5_LOT_SIZE = {
-    "BTCUSD": 0.03,
-    "ETHUSD": 0.09,
-    "BNBUSD": 0.30,
+    "BTCUSD": 0.03,   # 運用中：1回0.01×3回
+    "ETHUSD": 0.09,   # 停止中（設定は残す）：1回0.03×3回
+    "BNBUSD": 0.30,   # 運用中：1回0.10×3回
+    "XAUUSD": 0.03,   # 新規追加：1回0.01×3回
+    "EURUSD": 0.03,   # 新規追加：1回0.01×3回
 }
 
 def round_qty(qty, symbol):
