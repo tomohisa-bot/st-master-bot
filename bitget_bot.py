@@ -69,18 +69,17 @@ QTY_DECIMALS = {
 }
 
 # ===== MT5ロットサイズ =====
-# ★全通貨0.01の最小ロットに統一（安全設定）
 MT5_LOT_SIZE = {
-    "BTCUSD":   0.01,   # ★最小ロット
-    "ETHUSD":   0.01,   # ★最小ロット
-    "DOGEUSD":  0.01,   # ★修正（1.0→0.01）
-    "SOLUSD":   0.01,   # ★修正（0.1→0.01）
-    "DOTUSD":   0.01,   # ★修正（1.0→0.01）
-    "XRPUSD":   0.01,   # ★修正（1.0→0.01）★重要
-    "EURUSD":   0.01,   # ★修正（0.03→0.01）
-    "AUDUSD":   0.01,   # ★修正（0.03→0.01）
-    "GBPUSD":   0.01,   # ★修正（0.03→0.01）
-    "USDJPY":   0.01,   # ★修正（0.03→0.01）
+    "BTCUSD":   0.03,   # ★稼ぎ頭：0.03ロット（3分割→1回0.01）
+    "ETHUSD":   0.01,
+    "DOGEUSD":  0.01,
+    "SOLUSD":   0.01,
+    "DOTUSD":   0.01,
+    "XRPUSD":   0.01,
+    "EURUSD":   0.01,
+    "AUDUSD":   0.01,
+    "GBPUSD":   0.01,
+    "USDJPY":   0.01,
 }
 
 def round_qty(qty, symbol):
@@ -219,7 +218,7 @@ def webhook():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ===== Vantage MT5用Webhook（シンボル別キューに保存）=====
+# ===== Vantage MT5用Webhook =====
 @app.route("/mt5order", methods=["POST"])
 def mt5order():
     try:
@@ -229,8 +228,7 @@ def mt5order():
 
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSD")
-
-        lots = MT5_LOT_SIZE.get(symbol, 0.01)
+        lots   = MT5_LOT_SIZE.get(symbol, 0.01)
 
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
@@ -247,13 +245,12 @@ def mt5order():
         }
         mt5_queues[symbol].append(order)
         print(f"✅ MT5キュー追加 [{symbol}]: {order}")
-
         return jsonify({"status": "OK", "order": order})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ===== MT5 EAがシンボル指定でポーリング =====
+# ===== MT5ポーリング =====
 @app.route("/mt5poll", methods=["GET"])
 def mt5poll():
     try:
@@ -285,7 +282,7 @@ def health():
     queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
     return jsonify({
         "status":     "稼働中",
-        "message":    "Vantage MT5 Bot v3.1（全通貨0.01ロット統一）",
+        "message":    "Vantage MT5 Bot v3.2",
         "mt5_queues": queue_status
     })
 
