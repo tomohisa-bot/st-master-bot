@@ -18,8 +18,19 @@ WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
 BASE_URL = "https://api.bitget.com"
 
 # ===== MT5用シンボル別キュー =====
-# ★5通貨に更新（ETHUSD・BNBUSD・XAUUSD除外、AUDUSD・GBPUSD・USDJPY追加）
-MT5_SYMBOLS = ["BTCUSD", "EURUSD", "AUDUSD", "GBPUSD", "USDJPY"]
+# ★10通貨対応版
+MT5_SYMBOLS = [
+    "BTCUSD",   # 仮想通貨メイン
+    "ETHUSD",   # 仮想通貨
+    "DOGEUSD",  # ★新規追加
+    "SOLUSD",   # ★新規追加
+    "DOTUSD",   # ★新規追加
+    "XRPUSD",   # ★新規追加
+    "EURUSD",   # FX
+    "AUDUSD",   # FX
+    "GBPUSD",   # FX
+    "USDJPY",   # FX
+]
 mt5_queues = {symbol: deque(maxlen=100) for symbol in MT5_SYMBOLS}
 
 ORDER_SIZE = {
@@ -58,19 +69,21 @@ QTY_DECIMALS = {
     "BGBUSDT":  0,
 }
 
-# ===== MT5ロットサイズ（3回分割用）=====
-# ★5通貨に更新
-# BTCUSDチャート  → 0.03（1回0.01×3回）
-# EURUSDチャート  → 0.03（1回0.01×3回）
-# AUDUSDチャート  → 0.03（1回0.01×3回）
-# GBPUSDチャート  → 0.03（1回0.01×3回）
-# USDJPYチャート  → 0.03（1回0.01×3回）
+# ===== MT5ロットサイズ =====
+# ★1分足・最小ロット設定
 MT5_LOT_SIZE = {
-    "BTCUSD": 0.03,
-    "EURUSD": 0.03,
-    "AUDUSD": 0.03,
-    "GBPUSD": 0.03,
-    "USDJPY": 0.03,
+    # 仮想通貨
+    "BTCUSD":   0.01,   # BTC：最小ロット
+    "ETHUSD":   0.01,   # ETH：最小ロット
+    "DOGEUSD":  1.0,    # DOGE：単価安いので1.0
+    "SOLUSD":   0.1,    # SOL
+    "DOTUSD":   1.0,    # DOT
+    "XRPUSD":   1.0,    # XRP
+    # FX
+    "EURUSD":   0.03,
+    "AUDUSD":   0.03,
+    "GBPUSD":   0.03,
+    "USDJPY":   0.03,
 }
 
 def round_qty(qty, symbol):
@@ -221,7 +234,7 @@ def mt5order():
         symbol = data.get("symbol", "BTCUSD")
 
         # ★TradingViewのlots値は無視してMT5_LOT_SIZEを強制使用
-        lots = MT5_LOT_SIZE.get(symbol, 0.03)
+        lots = MT5_LOT_SIZE.get(symbol, 0.01)
 
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
@@ -275,8 +288,8 @@ def mt5poll():
 def health():
     queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
     return jsonify({
-        "status":    "稼働中",
-        "message":   "Bitget + Vantage MT5 Bot v2.0（5通貨対応）",
+        "status":     "稼働中",
+        "message":    "Vantage MT5 Bot v3.0（10通貨対応）",
         "mt5_queues": queue_status
     })
 
@@ -284,9 +297,10 @@ def health():
 def status():
     queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
     return jsonify({
-        "order_sizes": ORDER_SIZE,
-        "mt5_queues":  queue_status,
-        "mt5_lot_size": MT5_LOT_SIZE
+        "order_sizes":   ORDER_SIZE,
+        "mt5_queues":    queue_status,
+        "mt5_lot_size":  MT5_LOT_SIZE,
+        "total_symbols": len(MT5_SYMBOLS)
     })
 
 @app.route("/price/<symbol>", methods=["GET"])
