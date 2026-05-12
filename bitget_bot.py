@@ -75,7 +75,7 @@ MT5_LOT_SIZE = {
     "DOGEUSD":  0.01,
     "SOLUSD":   0.01,
     "DOTUSD":   0.01,
-    "XRPUSD":   0.01,
+    "XRPUSD":   0.001,
     "EURUSD":   0.01,
     "AUDUSD":   0.01,
     "GBPUSD":   0.01,
