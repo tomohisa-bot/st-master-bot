@@ -1,339 +1,308 @@
-from flask import Flask, request, jsonify
-import hmac
-import hashlib
-import time
-import requests
-import json
-import os
-import base64
-from collections import deque
+//+------------------------------------------------------------------+
+//| Vantage_BB_Bot_XAGUSD_v9.00.mq5                                  |
+//| XAGUSD専用 BB Hedge Bot                                           |
+//| TradingView → Flask → MT5ポーリング方式                           |
+//| MagicNumber: 20250615                                             |
+//+------------------------------------------------------------------+
+#property copyright "BB Hedge Bot"
+#property version   "9.00"
+#property strict
 
-app = Flask(__name__)
+#include <Trade\Trade.mqh>
 
-BITGET_API_KEY    = os.environ.get("BITGET_API_KEY", "")
-BITGET_SECRET_KEY = os.environ.get("BITGET_SECRET_KEY", "")
-BITGET_PASSPHRASE = os.environ.get("BITGET_PASSPHRASE", "")
-WEBHOOK_SECRET    = os.environ.get("WEBHOOK_SECRET", "bitget_master_bot")
+//============================================================
+// 入力パラメータ
+//============================================================
+input string   PollURL        = "https://st-master-bot.onrender.com/mt5poll"; // ポーリングURL
+input string   WebhookSecret  = "bitget_master_bot";  // 認証シークレット
+input string   ManagedSymbol  = "XAGUSD";             // 管理銘柄
+input long     MagicNumber    = 20250615;              // ★XAGUSD専用Magic
+input double   LotSize        = 0.01;                 // ロットサイズ
+input int      PollInterval   = 5;                    // ポーリング間隔（秒）
+input int      Slippage        = 30;                  // スリッページ（ポイント）
 
-BASE_URL = "https://api.bitget.com"
+// 損切り設定
+input bool     UseSL          = true;                 // SLを使用するか
+input double   StopLossUSD    = 30.0;                 // 緊急強制損切りUSD（保険）
+input double   MinSL_Distance = 200;                  // 最小SL距離（ポイント）
 
-# ===== MT5用シンボル別キュー =====
-MT5_SYMBOLS = [
-    "BTCUSD",   # 仮想通貨メイン
-    "XAUUSD",   # ★追加：ゴールド
-    "ETHUSD",   # 仮想通貨
-    "DOGEUSD",  # 仮想通貨
-    "SOLUSD",   # 仮想通貨
-    "DOTUSD",   # 仮想通貨
-    "XRPUSD",   # 仮想通貨
-    "EURUSD",   # FX
-    "AUDUSD",   # FX
-    "GBPUSD",   # FX
-    "USDJPY",   # FX
-    "NAS100.r", # 株価指数
-    "SP500ft.r",# 株価指数
-    "GER40.r",  # 株価指数
-    "JPN225ft", # 株価指数
-]
-mt5_queues = {symbol: deque(maxlen=100) for symbol in MT5_SYMBOLS}
+// 建値移動設定（Phase1）
+input double   Phase1_Profit  = 5.0;                  // 建値移動発動利益USD（0で無効）
 
-ORDER_SIZE = {
-    "BTCUSDT":  50,
-    "ETHUSDT":  50,
-    "XRPUSDT":  50,
-    "SOLUSDT":  10,
-    "DOGEUSDT": 10,
-    "BNBUSDT":  50,
-    "SUIUSDT":  10,
-    "ADAUSDT":  10,
-    "BGBUSDT":  10,
+//============================================================
+// グローバル変数
+//============================================================
+CTrade trade;
+datetime lastPollTime = 0;
+bool     phase1Done   = false;
+
+//+------------------------------------------------------------------+
+//| Expert initialization                                            |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(Slippage);
+   trade.SetTypeFilling(GetFillingMode());
+   EventSetTimer(PollInterval);
+   Print("✅ XAGUSD EA v9.00 起動 Magic=", MagicNumber);
+   return INIT_SUCCEEDED;
 }
 
-MIN_QTY = {
-    "BTCUSDT":  0.001,
-    "ETHUSDT":  0.01,
-    "XRPUSDT":  1.0,
-    "SOLUSDT":  0.1,
-    "DOGEUSDT": 1.0,
-    "BNBUSDT":  0.01,
-    "SUIUSDT":  1.0,
-    "ADAUSDT":  1.0,
-    "BGBUSDT":  1.0,
+//+------------------------------------------------------------------+
+//| Expert deinitialization                                          |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   Print("🛑 XAGUSD EA 停止");
 }
 
-QTY_DECIMALS = {
-    "BTCUSDT":  3,
-    "ETHUSDT":  2,
-    "XRPUSDT":  0,
-    "SOLUSDT":  1,
-    "DOGEUSDT": 0,
-    "BNBUSDT":  2,
-    "SUIUSDT":  0,
-    "ADAUSDT":  0,
-    "BGBUSDT":  0,
+//+------------------------------------------------------------------+
+//| Timer：ポーリング                                                 |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   PollAndExecute();
 }
 
-# ===== MT5ロットサイズ =====
-MT5_LOT_SIZE = {
-    "BTCUSD":    0.03,   # ★稼ぎ頭：0.03ロット
-    "XAUUSD":    0.01,   # ★追加：ゴールド
-    "ETHUSD":    0.01,
-    "DOGEUSD":   0.01,
-    "SOLUSD":    0.01,
-    "DOTUSD":    0.01,
-    "XRPUSD":    0.001,
-    "EURUSD":    0.01,
-    "AUDUSD":    0.01,
-    "GBPUSD":    0.01,
-    "USDJPY":    0.01,
-    "NAS100.r":  0.01,
-    "SP500ft.r": 0.01,
-    "GER40.r":   0.01,
-    "JPN225ft":  0.01,
+//+------------------------------------------------------------------+
+//| Tick：緊急損切り監視                                              |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // 強制損切り（保険）
+   if(StopLossUSD > 0)
+   {
+      CheckEmergencyStop(POSITION_TYPE_BUY);
+      CheckEmergencyStop(POSITION_TYPE_SELL);
+   }
+
+   // Phase1：建値移動
+   if(Phase1_Profit > 0)
+   {
+      CheckPhase1(POSITION_TYPE_BUY);
+      CheckPhase1(POSITION_TYPE_SELL);
+   }
 }
 
-def round_qty(qty, symbol):
-    decimals = QTY_DECIMALS.get(symbol, 3)
-    return round(qty, decimals)
+//+------------------------------------------------------------------+
+//| ポーリング＆注文実行                                              |
+//+------------------------------------------------------------------+
+void PollAndExecute()
+{
+   string url     = PollURL + "?secret=" + WebhookSecret + "&symbol=" + ManagedSymbol;
+   string headers = "Content-Type: application/json\r\n";
+   char   postData[];
+   char   result[];
+   string responseHeaders;
 
-def generate_signature(timestamp, method, request_path, body=""):
-    message = str(timestamp) + method.upper() + request_path + body
-    signature = hmac.new(
-        BITGET_SECRET_KEY.encode("utf-8"),
-        message.encode("utf-8"),
-        hashlib.sha256
-    ).digest()
-    return base64.b64encode(signature).decode("utf-8")
+   int res = WebRequest("GET", url, headers, 5000, postData, result, responseHeaders);
+   if(res < 0)
+   {
+      Print("❌ WebRequest失敗 error=", GetLastError());
+      return;
+   }
 
-def get_headers(method, request_path, body=""):
-    timestamp = str(int(time.time() * 1000))
-    signature = generate_signature(timestamp, method, request_path, body)
-    return {
-        "ACCESS-KEY":        BITGET_API_KEY,
-        "ACCESS-SIGN":       signature,
-        "ACCESS-TIMESTAMP":  timestamp,
-        "ACCESS-PASSPHRASE": BITGET_PASSPHRASE,
-        "Content-Type":      "application/json",
-        "locale":            "ja-JP"
-    }
+   string response = CharArrayToString(result);
+   string status   = ExtractJson(response, "status");
 
-def get_current_price(symbol):
-    url = f"{BASE_URL}/api/v2/mix/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
-    response = requests.get(url)
-    data = response.json()
-    if data.get("code") == "00000":
-        return float(data["data"][0]["lastPr"])
-    return None
+   if(status != "order") return;
 
-def place_order(symbol, side, trade_side, size_usdt, leverage=1):
-    price = get_current_price(symbol)
-    if not price:
-        return {"error": "価格取得失敗"}
-    raw_qty = size_usdt / price
-    qty = round_qty(raw_qty, symbol)
-    min_qty = MIN_QTY.get(symbol, 0.001)
-    if qty < min_qty:
-        qty = min_qty
-    path = "/api/v2/mix/order/place-order"
-    body = json.dumps({
-        "symbol":      symbol,
-        "productType": "USDT-FUTURES",
-        "marginMode":  "isolated",
-        "marginCoin":  "USDT",
-        "size":        str(qty),
-        "side":        side,
-        "tradeSide":   trade_side,
-        "orderType":   "market",
-        "force":       "gtc"
-    })
-    headers = get_headers("POST", path, body)
-    response = requests.post(BASE_URL + path, headers=headers, data=body)
-    result = response.json()
-    print(f"注文結果: {result}")
-    return result
+   string action = ExtractJson(response, "action");
+   string symbol = ExtractJson(response, "symbol");
 
-def cancel_all_orders(symbol):
-    path = "/api/v2/mix/order/cancel-all-orders"
-    body = json.dumps({
-        "symbol":      symbol,
-        "productType": "USDT-FUTURES",
-        "marginCoin":  "USDT"
-    })
-    headers = get_headers("POST", path, body)
-    response = requests.post(BASE_URL + path, headers=headers, data=body)
-    return response.json()
+   if(symbol != ManagedSymbol)
+   {
+      Print("⚠️ シンボル不一致: ", symbol, " / 管理対象: ", ManagedSymbol);
+      return;
+   }
 
-def close_positions_by_side(symbol, hold_side):
-    cancel_all_orders(symbol)
-    time.sleep(0.5)
-    path = "/api/v2/mix/order/close-positions"
-    body = json.dumps({
-        "symbol":      symbol,
-        "productType": "USDT-FUTURES",
-        "holdSide":    hold_side
-    })
-    headers = get_headers("POST", path, body)
-    response = requests.post(BASE_URL + path, headers=headers, data=body)
-    return response.json()
+   Print("📩 シグナル受信: action=", action, " symbol=", symbol);
 
-def close_all_positions(symbol):
-    cancel_all_orders(symbol)
-    time.sleep(0.5)
-    results = []
-    for side in ["long", "short"]:
-        r = close_positions_by_side(symbol, side)
-        results.append(r)
-    return results
+   if(action == "long")        ExecuteEntry(ORDER_TYPE_BUY);
+   else if(action == "short")  ExecuteEntry(ORDER_TYPE_SELL);
+   else if(action == "close_long")  CloseAllPositions(POSITION_TYPE_BUY);
+   else if(action == "close_short") CloseAllPositions(POSITION_TYPE_SELL);
+}
 
-# ===== Bitget用Webhook =====
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        # ★修正：NullガードとJSONパース強化
-        if request.is_json:
-            data = request.get_json()
-        else:
-            raw = request.data.decode('utf-8').strip()
-            if not raw:
-                return jsonify({"error": "空のリクエスト"}), 400
-            data = json.loads(raw)
+//+------------------------------------------------------------------+
+//| エントリー実行                                                    |
+//+------------------------------------------------------------------+
+void ExecuteEntry(ENUM_ORDER_TYPE orderType)
+{
+   double price = (orderType == ORDER_TYPE_BUY)
+                  ? SymbolInfoDouble(ManagedSymbol, SYMBOL_ASK)
+                  : SymbolInfoDouble(ManagedSymbol, SYMBOL_BID);
 
-        if data is None:
-            return jsonify({"error": "JSONパース失敗"}), 400
-        if isinstance(data, (int, float)):
-            return jsonify({"status": "ignored"}), 200
-        if data.get("secret") != WEBHOOK_SECRET:
-            return jsonify({"error": "認証失敗"}), 403
+   double sl = 0.0;
+   if(UseSL)
+   {
+      double point    = SymbolInfoDouble(ManagedSymbol, SYMBOL_POINT);
+      double slPoints = MathMax(MinSL_Distance, 200.0);
+      sl = (orderType == ORDER_TYPE_BUY)
+           ? price - slPoints * point
+           : price + slPoints * point;
+   }
 
-        action   = data.get("action", "").lower()
-        symbol   = data.get("symbol", "BTCUSDT")
-        leverage = int(data.get("leverage", 1))
+   MqlTradeRequest req = {};
+   MqlTradeResult  resp = {};
 
-        if symbol not in ORDER_SIZE:
-            return jsonify({"error": f"未対応: {symbol}"}), 400
+   req.action       = TRADE_ACTION_DEAL;
+   req.symbol       = ManagedSymbol;
+   req.volume       = LotSize;
+   req.type         = orderType;
+   req.price        = price;
+   req.sl           = sl;
+   req.deviation    = Slippage;
+   req.magic        = MagicNumber;
+   req.comment      = "BB_XAGUSD_v9";
+   req.type_filling = GetFillingMode();
 
-        size_usdt = ORDER_SIZE.get(symbol, 10)
+   bool sent = OrderSend(req, resp);
+   if(sent && resp.retcode == TRADE_RETCODE_DONE)
+      Print("✅ エントリー成功: ", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"),
+            " price=", resp.price, " lot=", LotSize);
+   else
+      Print("❌ エントリー失敗 retcode=", resp.retcode);
 
-        if action == "long":
-            result = place_order(symbol, "buy", "open", size_usdt, leverage)
-            return jsonify({"status": "ロングエントリー", "result": result})
-        elif action == "short":
-            result = place_order(symbol, "sell", "open", size_usdt, leverage)
-            return jsonify({"status": "ショートエントリー", "result": result})
-        elif action == "close_short":
-            result = close_positions_by_side(symbol, "short")
-            return jsonify({"status": "ショート利確", "result": result})
-        elif action == "close_long":
-            result = close_positions_by_side(symbol, "long")
-            return jsonify({"status": "ロング利確", "result": result})
-        elif action in ["close", "close_all"]:
-            results = close_all_positions(symbol)
-            return jsonify({"status": "全決済", "result": results})
-        else:
-            return jsonify({"error": f"不明: {action}"}), 400
+   phase1Done = false;
+}
 
-    except Exception as e:
-        print(f"❌ webhook error: {e}")
-        return jsonify({"error": str(e)}), 500
+//+------------------------------------------------------------------+
+//| 全ポジション決済                                                  |
+//+------------------------------------------------------------------+
+void CloseAllPositions(long posType)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != ManagedSymbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetInteger(POSITION_TYPE)  != posType) continue;
 
-# ===== Vantage MT5用Webhook =====
-@app.route("/mt5order", methods=["POST"])
-def mt5order():
-    try:
-        # ★修正：NullガードとJSONパース強化
-        if request.is_json:
-            data = request.get_json()
-        else:
-            raw = request.data.decode('utf-8').strip()
-            if not raw:
-                return jsonify({"error": "空のリクエスト"}), 400
-            data = json.loads(raw)
+      MqlTradeRequest req = {};
+      MqlTradeResult  resp = {};
 
-        if data is None:
-            return jsonify({"error": "JSONパース失敗"}), 400
+      req.action       = TRADE_ACTION_DEAL;
+      req.symbol       = ManagedSymbol;
+      req.volume       = PositionGetDouble(POSITION_VOLUME);
+      req.type         = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      req.price        = (posType == POSITION_TYPE_BUY)
+                         ? SymbolInfoDouble(ManagedSymbol, SYMBOL_BID)
+                         : SymbolInfoDouble(ManagedSymbol, SYMBOL_ASK);
+      req.deviation    = Slippage;
+      req.magic        = MagicNumber;
+      req.position     = ticket;
+      req.type_filling = GetFillingMode();
 
-        if data.get("secret") != WEBHOOK_SECRET:
-            return jsonify({"error": "認証失敗"}), 403
+      bool sent = OrderSend(req, resp);
+      if(sent && resp.retcode == TRADE_RETCODE_DONE)
+         Print("✅ 決済成功 ticket=", ticket);
+      else
+         Print("❌ 決済失敗 retcode=", resp.retcode);
+   }
+   phase1Done = false;
+}
 
-        action = data.get("action", "").lower()
-        symbol = data.get("symbol", "BTCUSD")
+//+------------------------------------------------------------------+
+//| 緊急強制損切り（保険）                                            |
+//+------------------------------------------------------------------+
+void CheckEmergencyStop(long posType)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != ManagedSymbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetInteger(POSITION_TYPE)  != posType) continue;
 
-        # ★修正：lotsはTV側から受け取る、なければMT5_LOT_SIZEから取得
-        lots = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.01)))
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      if(profit <= -StopLossUSD)
+      {
+         Print("🚨 緊急損切り発動 profit=", profit, " USD");
+         CloseAllPositions(posType);
+      }
+   }
+}
 
-        if action not in ["long", "short", "close_long", "close_short"]:
-            return jsonify({"error": f"不明なaction: {action}"}), 400
+//+------------------------------------------------------------------+
+//| Phase1：建値移動                                                  |
+//+------------------------------------------------------------------+
+void CheckPhase1(long posType)
+{
+   if(phase1Done) return;
 
-        # ★修正：未登録シンボルも動的に対応
-        if symbol not in mt5_queues:
-            mt5_queues[symbol] = deque(maxlen=100)
-            print(f"✅ 新規シンボルキュー作成: {symbol}")
+   double totalProfit = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != ManagedSymbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetInteger(POSITION_TYPE)  != posType) continue;
+      totalProfit += PositionGetDouble(POSITION_PROFIT);
+   }
 
-        order = {
-            "action": action,
-            "symbol": symbol,
-            "lots":   lots,
-            "time":   int(time.time())
-        }
-        mt5_queues[symbol].append(order)
-        print(f"✅ MT5キュー追加 [{symbol}]: {order}")
-        return jsonify({"status": "OK", "order": order})
+   if(totalProfit < Phase1_Profit) return;
 
-    except Exception as e:
-        print(f"❌ mt5order error: {e}")
-        return jsonify({"error": str(e)}), 500
+   // 建値にSLを移動
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != ManagedSymbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      if(PositionGetInteger(POSITION_TYPE)  != posType) continue;
 
-# ===== MT5ポーリング =====
-@app.route("/mt5poll", methods=["GET"])
-def mt5poll():
-    try:
-        secret = request.args.get("secret", "")
-        if secret != WEBHOOK_SECRET:
-            return jsonify({"error": "認証失敗"}), 403
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL = PositionGetDouble(POSITION_SL);
 
-        symbol = request.args.get("symbol", "")
-        if not symbol:
-            return jsonify({"error": "symbolパラメータが必要です"}), 400
+      bool shouldMove = (posType == POSITION_TYPE_BUY  && (currentSL < openPrice || currentSL == 0)) ||
+                        (posType == POSITION_TYPE_SELL && (currentSL > openPrice || currentSL == 0));
 
-        if symbol not in mt5_queues:
-            mt5_queues[symbol] = deque(maxlen=100)
+      if(shouldMove)
+      {
+         trade.PositionModify(ticket, openPrice, PositionGetDouble(POSITION_TP));
+         Print("🔒 建値移動 ticket=", ticket, " SL→", openPrice);
+      }
+   }
+   phase1Done = true;
+}
 
-        queue = mt5_queues[symbol]
-        if len(queue) == 0:
-            return jsonify({"status": "empty", "order": None})
+//+------------------------------------------------------------------+
+//| FillingMode自動取得                                               |
+//+------------------------------------------------------------------+
+ENUM_ORDER_TYPE_FILLING GetFillingMode()
+{
+   uint filling = (uint)SymbolInfoInteger(ManagedSymbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_IOC) != 0) return ORDER_FILLING_IOC;
+   if((filling & SYMBOL_FILLING_FOK) != 0) return ORDER_FILLING_FOK;
+   return ORDER_FILLING_RETURN;
+}
 
-        order = queue.popleft()
-        print(f"📤 MT5へ送信 [{symbol}]: {order}")
-        return jsonify({"status": "order", "order": order})
-
-    except Exception as e:
-        print(f"❌ mt5poll error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ===== ヘルスチェック =====
-@app.route("/", methods=["GET"])
-def health():
-    queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
-    return jsonify({
-        "status":     "稼働中",
-        "message":    "Vantage MT5 Bot v3.3",
-        "mt5_queues": queue_status
-    })
-
-@app.route("/status", methods=["GET"])
-def status():
-    queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
-    return jsonify({
-        "mt5_queues":    queue_status,
-        "mt5_lot_size":  MT5_LOT_SIZE,
-        "total_symbols": len(MT5_SYMBOLS)
-    })
-
-@app.route("/price/<symbol>", methods=["GET"])
-def check_price(symbol):
-    price = get_current_price(symbol)
-    return jsonify({"symbol": symbol, "price": price})
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+//+------------------------------------------------------------------+
+//| JSONパーサー                                                      |
+//+------------------------------------------------------------------+
+string ExtractJson(string json, string key)
+{
+   string search = "\"" + key + "\":";
+   int pos = StringFind(json, search);
+   if(pos < 0) return "";
+   pos += StringLen(search);
+   while(pos < StringLen(json) && StringGetCharacter(json, pos) == ' ') pos++;
+   string result = "";
+   bool isString = (StringGetCharacter(json, pos) == '"');
+   if(isString) pos++;
+   for(int i = pos; i < StringLen(json); i++)
+   {
+      ushort c = StringGetCharacter(json, i);
+      if(isString && c == '"') break;
+      if(!isString && (c == ',' || c == '}')) break;
+      result += ShortToString(c);
+   }
+   return result;
+}
+//+------------------------------------------------------------------+
