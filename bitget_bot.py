@@ -20,6 +20,7 @@ BASE_URL = "https://api.bitget.com"
 # ===== MT5用シンボル別キュー =====
 MT5_SYMBOLS = [
     "BTCUSD",   # 仮想通貨メイン
+    "XAUUSD",   # ★追加：ゴールド
     "ETHUSD",   # 仮想通貨
     "DOGEUSD",  # 仮想通貨
     "SOLUSD",   # 仮想通貨
@@ -29,6 +30,10 @@ MT5_SYMBOLS = [
     "AUDUSD",   # FX
     "GBPUSD",   # FX
     "USDJPY",   # FX
+    "NAS100.r", # 株価指数
+    "SP500ft.r",# 株価指数
+    "GER40.r",  # 株価指数
+    "JPN225ft", # 株価指数
 ]
 mt5_queues = {symbol: deque(maxlen=100) for symbol in MT5_SYMBOLS}
 
@@ -70,16 +75,21 @@ QTY_DECIMALS = {
 
 # ===== MT5ロットサイズ =====
 MT5_LOT_SIZE = {
-    "BTCUSD":   0.03,   # ★稼ぎ頭：0.03ロット（3分割→1回0.01）
-    "ETHUSD":   0.01,
-    "DOGEUSD":  0.01,
-    "SOLUSD":   0.01,
-    "DOTUSD":   0.01,
-    "XRPUSD":   0.001,
-    "EURUSD":   0.01,
-    "AUDUSD":   0.01,
-    "GBPUSD":   0.01,
-    "USDJPY":   0.01,
+    "BTCUSD":    0.03,   # ★稼ぎ頭：0.03ロット
+    "XAUUSD":    0.01,   # ★追加：ゴールド
+    "ETHUSD":    0.01,
+    "DOGEUSD":   0.01,
+    "SOLUSD":    0.01,
+    "DOTUSD":    0.01,
+    "XRPUSD":    0.001,
+    "EURUSD":    0.01,
+    "AUDUSD":    0.01,
+    "GBPUSD":    0.01,
+    "USDJPY":    0.01,
+    "NAS100.r":  0.01,
+    "SP500ft.r": 0.01,
+    "GER40.r":   0.01,
+    "JPN225ft":  0.01,
 }
 
 def round_qty(qty, symbol):
@@ -179,10 +189,17 @@ def close_all_positions(symbol):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
+        # ★修正：NullガードとJSONパース強化
         if request.is_json:
             data = request.get_json()
         else:
-            data = json.loads(request.data.decode('utf-8'))
+            raw = request.data.decode('utf-8').strip()
+            if not raw:
+                return jsonify({"error": "空のリクエスト"}), 400
+            data = json.loads(raw)
+
+        if data is None:
+            return jsonify({"error": "JSONパース失敗"}), 400
         if isinstance(data, (int, float)):
             return jsonify({"status": "ignored"}), 200
         if data.get("secret") != WEBHOOK_SECRET:
@@ -216,23 +233,38 @@ def webhook():
             return jsonify({"error": f"不明: {action}"}), 400
 
     except Exception as e:
+        print(f"❌ webhook error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ===== Vantage MT5用Webhook =====
 @app.route("/mt5order", methods=["POST"])
 def mt5order():
     try:
-        data = request.get_json()
+        # ★修正：NullガードとJSONパース強化
+        if request.is_json:
+            data = request.get_json()
+        else:
+            raw = request.data.decode('utf-8').strip()
+            if not raw:
+                return jsonify({"error": "空のリクエスト"}), 400
+            data = json.loads(raw)
+
+        if data is None:
+            return jsonify({"error": "JSONパース失敗"}), 400
+
         if data.get("secret") != WEBHOOK_SECRET:
             return jsonify({"error": "認証失敗"}), 403
 
         action = data.get("action", "").lower()
         symbol = data.get("symbol", "BTCUSD")
-        lots   = MT5_LOT_SIZE.get(symbol, 0.01)
+
+        # ★修正：lotsはTV側から受け取る、なければMT5_LOT_SIZEから取得
+        lots = float(data.get("lots", MT5_LOT_SIZE.get(symbol, 0.01)))
 
         if action not in ["long", "short", "close_long", "close_short"]:
             return jsonify({"error": f"不明なaction: {action}"}), 400
 
+        # ★修正：未登録シンボルも動的に対応
         if symbol not in mt5_queues:
             mt5_queues[symbol] = deque(maxlen=100)
             print(f"✅ 新規シンボルキュー作成: {symbol}")
@@ -248,6 +280,7 @@ def mt5order():
         return jsonify({"status": "OK", "order": order})
 
     except Exception as e:
+        print(f"❌ mt5order error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ===== MT5ポーリング =====
@@ -274,6 +307,7 @@ def mt5poll():
         return jsonify({"status": "order", "order": order})
 
     except Exception as e:
+        print(f"❌ mt5poll error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ===== ヘルスチェック =====
@@ -282,7 +316,7 @@ def health():
     queue_status = {sym: len(q) for sym, q in mt5_queues.items()}
     return jsonify({
         "status":     "稼働中",
-        "message":    "Vantage MT5 Bot v3.2",
+        "message":    "Vantage MT5 Bot v3.3",
         "mt5_queues": queue_status
     })
 
