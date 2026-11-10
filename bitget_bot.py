@@ -11,11 +11,33 @@ import math
 import re
 import tempfile
 import uuid
+import copy
+import logging
 from contextlib import contextmanager
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16384
-VERSION = "3.4.0"
+VERSION = "3.4.1"
+
+class RedactAccessSecrets(logging.Filter):
+    def filter(self, record):
+        def clean(value):
+            if not isinstance(value, str):
+                return value
+            return re.sub(r"(?i)(secret=)[^&\s\"']+", r"\1[REDACTED]", value)
+        record.msg = clean(record.msg)
+        if isinstance(record.args, dict):
+            args = copy.copy(record.args)
+            for key, value in args.items():
+                args[key] = "[REDACTED]" if "authorization" in str(key).lower() else clean(value)
+            record.args = args
+        elif isinstance(record.args, tuple):
+            record.args = tuple(clean(value) for value in record.args)
+        return True
+
+# Keep request/status audit logs, but never publish legacy query credentials.
+logging.getLogger("gunicorn.access").addFilter(RedactAccessSecrets())
+
 
 BITGET_API_KEY    = os.environ.get("BITGET_API_KEY", "")
 BITGET_SECRET_KEY = os.environ.get("BITGET_SECRET_KEY", "")

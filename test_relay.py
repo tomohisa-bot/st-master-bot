@@ -1,5 +1,7 @@
 """Offline contract tests. Never contacts an exchange or a live relay."""
 import importlib.util
+import io
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -90,7 +92,7 @@ class RelayTests(unittest.TestCase):
     def test_health_excludes_secrets(self):
         r=self.client.get('/healthz')
         self.assertEqual(r.status_code,200)
-        self.assertEqual(r.json['version'],'3.4.0')
+        self.assertEqual(r.json['version'],'3.4.1')
         self.assertNotIn(os.environ['WEBHOOK_SECRET'],r.get_data(as_text=True))
 
     def test_missing_secret_refuses_start(self):
@@ -98,6 +100,22 @@ class RelayTests(unittest.TestCase):
         r=subprocess.run([sys.executable,'-X','utf8','-c','import bitget_bot'],cwd=ROOT,env=env,capture_output=True,text=True,encoding='utf-8',errors='replace')
         self.assertNotEqual(r.returncode,0)
         self.assertIn('WEBHOOK_SECRET must be configured',r.stderr)
+
+    def test_gunicorn_request_log_redacts_credentials(self):
+        output=io.StringIO()
+        logger=logging.getLogger('gunicorn.access')
+        handler=logging.StreamHandler(output)
+        logger.addHandler(handler)
+        try:
+            atoms={'r':'GET /mt5poll?secret=offline-test-key-only&symbol=BTCUSD HTTP/1.1','s':'200','{authorization}i':'Bearer offline-test-key-only'}
+            record=logging.LogRecord('gunicorn.access',logging.INFO,'test',1,'%(r)s %(s)s %({authorization}i)s',(atoms,),None)
+            logger.handle(record)
+            self.assertNotIn('offline-test-key-only',output.getvalue())
+            self.assertIn('secret=[REDACTED]&symbol=BTCUSD',output.getvalue())
+            self.assertIn('200',output.getvalue())
+            self.assertIn('offline-test-key-only',atoms['r'])
+        finally:
+            logger.removeHandler(handler)
 
 if __name__=='__main__':
     unittest.main(verbosity=2)

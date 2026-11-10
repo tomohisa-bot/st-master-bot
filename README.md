@@ -1,4 +1,4 @@
-# MT5 relay 3.4.0
+# MT5 relay 3.4.1
 
 TradingView alerts -> HTTPS relay -> polling MT5 EA. This repository hosts the relay, not MQL5 source. The Flask entry point is `bitget_bot:app`; the legacy filename is kept to preserve the existing host start command.
 
@@ -33,6 +33,8 @@ Unknown symbols, malformed JSON, invalid actions, nonfinite/nonpositive lots, ov
 | SIGNAL_TTL_SECONDS | 0 | Queue expiry by relay receive time. Disabled to preserve existing strategy behavior. Enable only with an agreed maximum delay. Does not verify TradingView creation time. |
 
 Old exchange API credentials are not needed for MT5. Revoke unused credentials at their issuer; disabling a route does not revoke credentials.
+
+Gunicorn application access logs redact legacy query secrets while retaining request/status metadata. This cannot remove previously stored logs or control hosting-edge logs. Rotate exposed keys; migrate polling clients to header authentication. Version 3.4.1 adds this log filter after live verification revealed query credentials in request logs.
 
 ## Deployment and rollback
 
